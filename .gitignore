@@ -1,0 +1,4 @@
+dist
+prelapse.egg-info
+prelapse/_version.py
+*.svg

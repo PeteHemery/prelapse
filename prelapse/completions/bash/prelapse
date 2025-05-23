@@ -1,0 +1,101 @@
+#!/bin/bash
+
+# Copyright (c) 2020-2025 Pete Hemery - Hembedded Software Ltd. All Rights Reserved
+# This file is part of prelapse which is released under the AGPL-3.0 License.
+# See the LICENSE file for full license details.
+
+# completions/bash/prelapse
+
+__prelapse_completions() {
+#   set -x
+  local cur prev
+#   echo "type: ${COMP_TYPE}" >&2
+#   echo "line '${COMP_LINE[@]}'" >&2
+#   echo ${COMP_POINT[@]} >&2
+#   echo ${COMP_WORDS[@]} >&2
+#   echo ${COMP_CWORD} >&2
+  STRING_LENGTH=${#COMP_LINE}
+  # Adjust the incoming line if the cursor is before the end
+  [ $COMP_POINT -lt ${#COMP_LINE} ] && {
+    COMP_LINE=${COMP_LINE:0:$COMP_POINT}
+    IFS=" " read -ra COMP_WORDS <<< ${COMP_LINE}
+    let COMP_CWORD=${#COMP_WORDS[@]}-1
+    [[ ${COMP_LINE: -1} == " " ]] && let COMP_CWORD=$COMP_CWORD+1
+  }
+  cur=${COMP_WORDS[COMP_CWORD]}
+  prev=${COMP_WORDS[COMP_CWORD-1]}
+
+  # Call the Python script for completions
+  PREDICTIONS=()
+    PREDICTIONS=$(COMP_LINE="$COMP_LINE" COMP_POINT="$COMP_POINT" prelapse)
+
+  case "${prev}" in
+    -a|--audio)
+      case "${COMP_WORDS[1]}" in
+        enc|play)
+          # Generate a list of audio files for completion
+          COMPREPLY=( $(compgen -A file -X '!*.@(mp3|mp4|m4a|wav)' -W "audio.m4a" -- "$cur") )
+          ;;
+        *)
+          COMPREPLY=( $(compgen -W "$PREDICTIONS" -- "${cur}") )
+          ;;
+      esac
+      ;;
+    -c|--config)
+      case "${COMP_WORDS[1]}" in
+        mod|info|enc|play)
+          # Generate a list of config files for completion
+          COMPREPLY=( $(compgen -A file -X '!*.@(md)' -W "prelapse_config.md" -- "$cur") )
+          ;;
+        *)
+          COMPREPLY=( $(compgen -W "$PREDICTIONS" -- "${cur}") )
+          ;;
+      esac
+      ;;
+    -o|--outpath|--outmod)
+      case "${COMP_WORDS[1]}" in
+        enc)
+          # Generate a list of config files for completion
+          COMPREPLY=( $(compgen -A file -X '!*.@(mp4)' -- "$cur") )
+          ;;
+        gen)
+          # Generate a list of config files for completion
+          COMPREPLY=( $(compgen -A file -X '!*.@(md)' -W "prelapse_config.md" -- "$cur") )
+          ;;
+        # mod) # It's a 'set true' flag. Just predict the next flag
+        *)
+          COMPREPLY=( $(compgen -W "$PREDICTIONS" -- "${cur}") )
+          ;;
+      esac
+      ;;
+    -l|--labels)
+      case "${COMP_WORDS[1]}" in
+        gen|play|enc)
+          # Generate a list of Audacity labels files for completion
+          COMPREPLY=( $(compgen -A file -X '!*.@(txt)' -W "labels.txt" -- "$cur") )
+          ;;
+        mod)
+          if [ "${COMP_WORDS[2]}" == "labels" ]; then
+            # Generate a list of Audacity labels files for completion
+            COMPREPLY=( $(compgen -A file -X '!*.@(txt)' -W "labels.txt" -- "$cur") )
+          else
+            COMPREPLY=( $(compgen -W "$PREDICTIONS" -- "${cur}") )
+          fi
+          ;;
+        *)
+          COMPREPLY=( $(compgen -W "$PREDICTIONS" -- "${cur}") )
+          ;;
+      esac
+      ;;
+    -f|--ffconcatfile)
+      # Generate a list of ffconcat files for completion
+      COMPREPLY=( $(compgen -A file -X '!*.@(ffcat|ffconcat)' -W "prelapse.ffconcat" -- "$cur") )
+      ;;
+    *)
+      COMPREPLY=( $(compgen -W "$PREDICTIONS" -- "${cur}") )
+      ;;
+  esac
+#   set +x
+}
+
+complete -F __prelapse_completions prelapse

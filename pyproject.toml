@@ -1,0 +1,73 @@
+[project]
+name = "prelapse"
+dynamic = ["version"]
+requires-python = ">=2.7,>=3.0"
+authors = [{name="PeteHemery", email="prelapse.founder066@passinbox.com"}]
+description = "prelapse is a text based Python toolbox designed to help creating image sequence videos in sync with audio (e.g. slide shows, CG renders, stop motion animation, timelapses and hyperlapses), using ffmpeg/ffplay, Audacity and optionally ImageMagick."
+readme = "README.md"
+keywords = [
+    "prelapse",
+    "python",
+    "ffmpeg", "ffplay",
+    "audacity",
+    "imagemagick",
+    "stop motion",
+    "timelapse",
+    "hyperlapse",
+    "motion picture",
+    "image sequence",
+    "image sequencer",
+    "image sequences",
+    "video editor",
+    "non-linear video editor",
+]
+classifiers = [
+    # "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
+    # "Development Status :: 5 - Production/Stable",
+
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    # "License-File: LICENSE",
+
+    "Intended Audience :: Developers",
+    "Topic :: Artistic Software",
+    "Topic :: Multimedia :: Video :: Non-Linear Editor",
+
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 2.7",
+    "Programming Language :: Python :: 3"
+    # "Programming Language :: Python :: 3.6",
+    # "Programming Language :: Python :: 3.7",
+    # "Programming Language :: Python :: 3.8",
+    # "Programming Language :: Python :: 3.9",
+    # "Programming Language :: Python :: 3.10",
+    # "Programming Language :: Python :: 3.11",
+    # "Programming Language :: Python :: 3.12"
+]
+
+[project.urls]  # Optional
+Homepage = "https://github.com/PeteHemery/prelapse"
+
+[project.scripts]
+prelapse = "prelapse:prelapse_main"
+
+[tool.setuptools_scm]
+version_file = "prelapse/_version.py"
+version_file_template = """
+# This file is generated on release from pyproject.toml by setuptools_scm.
+# Do not modify this file manually.
+__version__ = 'v{version}'
+"""
+
+[tool.setuptools.package-data]
+# (if you want to include files inside your Python package)
+prelapse = ["prelapse/completions/bash/prelapse"]
+
+[tool.setuptools.data-files]
+# This tells setuptools to install the file into the given destination.
+"share/bash-completion/completions" = ["prelapse/completions/bash/prelapse"]
+
+[build-system]
+requires = ["setuptools>=42", "wheel", "setuptools_scm"]
+build-backend = "setuptools.build_meta"
