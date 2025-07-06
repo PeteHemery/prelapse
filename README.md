@@ -384,7 +384,7 @@ Support can be given by:
 
 Your support helps ensure the long-term sustainability and improvement of this
 project. For more information on how you can donate
-please visit: https://github.com/sponsors/PeteHemery
+please visit: https://github.com/sponsors/PeteHemery or if that still isn't working https://github.com/sponsors/MemoryLapse404
 
 Thanks for using `prelapse`! Go and be creative! Share what you learn!
 
