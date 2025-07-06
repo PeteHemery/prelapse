@@ -13,7 +13,7 @@ See the LICENSE file for full license details.
 -----
 
 ### What is it?
-<details open>
+<details>
 <summary>What is it?</summary>
 
 `prelapse` is a text based Python toolbox to help with the creation of image sequence based music videos, such as stop-motion animation, claymation, CG renders, time-lapses, hyper-lapses, slide-shows...
@@ -29,13 +29,14 @@ Explanations/tutorials are below/to come.
 <details>
 <summary>What in a name?</summary>
 
-Since its goal is to create *lapse type videos, using the script usually falls into the loop of "Prepare, Run/Refine, Enjoy", the name `prelapse` seemed to scratch my itch for puns and describe the software's function to my satisfaction.
-The acronym above is just a bit of fun.
+Since its goal is to create *lapse type videos, using the script involves some preparation, usually falling into the loop of "Prepare, Run/Refine, Enjoy". The name `prelapse` seemed to scratch my itch for puns, describe the software's function to my satisfaction, and the acronym above is just a bit of fun.
 </details>
 
 ### Why did I make it?
 <details>
 <summary>Why did I make it?</summary>
+
+**_Think hard and build things_** over **_Move fast and break things_**
 
 This "non-linear text based video editor" was created because of the time consuming frustration experienced when manually stitching together image sequences ***and then*** trying to sync to audio, causing dropped or duplicated frames.
 
@@ -82,6 +83,14 @@ You can install the latest release of this library from pypi using pip by runnin
 pip install prelapse
 ```
 
+-----
+
+</details>
+
+
+<details>
+<summary>Make changes with your own copy of the code (YAY Open Source)</summary>
+
 To download your own version locally and run changes:
 
 ```bash
@@ -90,9 +99,12 @@ cd prelapse
 python -m prelapse -h
 ```
 
-To install a custom version using `pip`, I've been using this, changing the `0.0.0` version number as needed:
+To install a custom version using `pip`, I've been using this **on Linux**, changing the `0.0.0` version number as needed to be higher than the current release:
+
 ```bash
-SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0  python -m build --no-isolation --verbose && pip install dist/prelapse-0.0.0-py3-none-any.whl --force-reinstall
+export SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
+python -m build --no-isolation --verbose
+pip install dist/prelapse-0.0.0-py3-none-any.whl --force-reinstall
 ```
 
 </details>
@@ -126,12 +138,11 @@ Follow the installation instructions for your operating system from the official
 
 ## Usage
 
-<details open>
+<details>
 <summary>Overview of using prelapse</summary>
 
 `prelapse` operates via the command line and provides several sub-commands for different tasks.
 Each sub-command has its own help section, so feel free to use `-h` whenever you need help about options currently available.
-</details>
 
 ### Command Syntax
 
@@ -147,12 +158,12 @@ To get started, it's recommended to explore the `-h/--help` options.
 
 #### `gen` - Generate Configuration
 <details>
-<summary>generate markdown config</summary>
+<summary>Generate markdown format config file to describe file locations of groups of images</summary>
 Generates a markdown (.md) configuration file by scanning a directory, (the `-i`/`--inpath` which is the current directory by default) and sub-directories, for images.
-Each directory containing images will be added as a group with the config file.
+
+Each directory containing images will be added as a group within the config file, with the relative path of the directory as a group name.
 If there are pictures in multiple depths of sub-directories (i.e. folders in folders) then you can adjust the depth of the search using the `-d`/`--depth` parameter.
-To sort the images by time order instead of alphabetical order, use the `-t`/`--time` parameter.
-The final product a file called `prelapse_config.md` by default (modifiable with `-o`/`--outpath`) in the `inpath` directory.
+A value of `--depth 1` will exclude the sub-directories, and only pick up images in the current directory.
 
 This example will search the current working directory, and all sub-directories below the current working directory.
 
@@ -160,10 +171,19 @@ This example will search the current working directory, and all sub-directories 
 prelapse gen --depth 2
 ```
 
-It's possible to add a dummy
-You can start adding `prelapse` specific comments at timestamps in `Audacity`, and then export them as labels. `labels.txt` is the assumed default.
+To sort the images by time order instead of alphabetical order, use the `-t`/`--time` parameter.
+The final product is a file called `prelapse_config.md` by default (modifiable with `-o`/`--outpath`) in the `inpath` directory.
 
+It's possible to add a dummy labels file when generating the config using `-l`/`--labels` and optionally specifying a name. You can set the Frames-Per-Second (FPS) value using `-lt`/`--labels-time`to have control over the rate of displaying images. All images will receive this FPS. So 1 will show a single picture per seconds, and the default 5 will show each image for 0.2, or 1/5, seconds.
 
+So a quick way to review holiday snaps with half a second for each image might be:
+
+```bash
+prelapse gen -t -l -lt 2
+prelapse play
+```
+
+You can use this as a starting point for importing labels in `Audacity` and then moving or adding `prelapse` specific comments at desired timestamps to synchronise groups to audio. Then export the label for use by `prelapse`. `labels.txt` is the default.
 
 </details>
 
@@ -186,6 +206,8 @@ prelapse mod image resize --group groupA --max 800 --inplace
 
 #### `play` - Preview Output
 
+**_See more info on how to use the runner below._**
+
 Preview the generated image sequence with `ffplay`.
 
 ```bash
@@ -193,6 +215,8 @@ prelapse play --audio audio.m4a
 ```
 
 #### `enc` - Encode Output to Video
+
+**_See more info on how to use the runner below._**
 
 Create a high quality x264 MP4 video from the image sequence using ffmpeg.
 
@@ -210,6 +234,27 @@ prelapse enc -a audio.m4a -w 720 -x 9/16 -C social -o social_output.mp4
 ```
 
 </details>
+
+### Runner Cheat-Sheet
+<details>
+<summary>prelapse Runner aka play/enc cheat-sheet</summary>
+
+There are some useful features that `prelapse` allows when trying to work with specific sections of a project.
+
+Since `ffplay` doesn't allow movement in the timeline as it render the video, it's possible to jump to a specific second by using `-j`/`--jump`. This allows "skipping ahead" to a section you're working on if you need to tweak specifics and just want to inspect that bit.
+
+Since some of us have low attention spans, you can adjust the tempo to be faster or slower by using `-t`/`--tempo`, where a value of 2 is double speed.
+
+To get a deep look at what `prelapse` is doing under the hood with calculating timestamps and parsing files, the `-v`/`-verbose` flag will probably givve you too much info.
+
+If you want more info from the underlying `ffmpeg` process, you can adjust its loglevel settings with `-V`/`--ffloglevel`, check the `-h` for the options available.
+
+A fun filter combo is the `-H`/`--histogram` feature, which stacks a visual representation of the audio under the current `prelapse` project.
+
+There are some left over filter experiments in `runner/lapse_runner.py`, have a look at the `ffmpeg-filters` documentation for inspiration. You are encouraged to explore and play.
+
+</details>
+
 
 ## Structure
 <details>
@@ -372,7 +417,6 @@ Please ensure that your code follows the style guide indicated in the `pylintrc`
 
 <details open>
 <summary>Hat on the ground</summary>
-
 
 ### How you can give support
 
