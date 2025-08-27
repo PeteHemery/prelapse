@@ -46,7 +46,7 @@ def run_labels(self, args):
   self.parse_args(args, "Label Modifier")
   if not os.path.exists(args.labels):
     raise RuntimeError("Labels file '{}' does not exist".format(args.labels))
-  with open(args.labels, "rb") as input_file:
+  with open(args.labels, "r", encoding="utf-8") as input_file:
     # Read the contents of the file
     lines = input_file.readlines()
   if args.dry_run:
@@ -55,8 +55,8 @@ def run_labels(self, args):
   modified_lines = modify_lines(self, args, lines)
   self.logger.debug(modified_lines)
   if not args.dry_run:
-    with open(args.labels, "wb") as output_file:
+    with open(args.labels, "w", encoding="utf-8") as output_file:
       # Iterate through each line
       for line in modified_lines:
         # Write the modified line to the output file
-        output_file.write(line.encode("utf-8"))
+        output_file.write(line)
