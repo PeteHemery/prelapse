@@ -4,6 +4,18 @@
 # This file is part of prelapse which is released under the AGPL-3.0 License.
 # See the LICENSE file for full license details.
 
+# You may convey verbatim copies of the Program's source code as you
+# receive it, in any medium, provided that you conspicuously and
+# appropriately publish on each copy an appropriate copyright notice;
+# keep intact all notices stating that this License and any
+# non-permissive terms added in accord with section 7 apply to the code;
+# keep intact all notices of the absence of any warranty; and give all
+# recipients a copy of this License along with the Program.
+
+# prelapse is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
 # runner/argument_parser.py
 
 import os
@@ -72,21 +84,26 @@ def _parse_aspect_ratio(aspectratio):
     if len(tmp) != 2:
       raise RuntimeError("Cannot parse aspect ratio: {}".format(aspectratio))
     try:
-      return float(tmp[0]) / float(tmp[1])
+      return round(float(tmp[0]) / float(tmp[1]), 6)
     except ValueError:
       pass
   try:
-    return float(aspectratio)
+    return round(float(aspectratio), 6)
   except ValueError:
     pass
   raise RuntimeError("Cannot parse aspect ratio: {}".format(aspectratio))
 
 
+def round_towards_4_to_closest_pow_2(x):
+  return x if not (x & 1) else x + (1 if x & 2 else -1)
+
+
 def _parse_args(self, args, run=False, out=False): # pylint: disable=too-many-branches,too-many-statements
   self.verbose = args.verbose
+  self.quiet = args.quiet
   self.dry_run = args.dry_run
   self.overwrite = args.overwrite
-  self.logger = setup_logger("Runner", self.verbose)
+  self.logger = setup_logger("Runner", self.verbose, self.quiet)
   self.enforce_files_exist = args.enforce_files_exist
   self.config, _ = load_config(args.config, self.enforce_files_exist)
   if not os.path.exists(args.labels):
@@ -94,7 +111,11 @@ def _parse_args(self, args, run=False, out=False): # pylint: disable=too-many-br
   self.labels = args.labels
   pwd = get_pwd()
   if self.dry_run:
-    self.ffconcatfile_fd, self.ffconcatfile = int(args.ffconcatfile_fd), args.ffconcatfile
+    self.ffconcatfile = args.ffconcatfile
+    try:
+      self.ffconcatfile_fd = int(args.ffconcatfile_fd)
+    except TypeError:
+      self.ffconcatfile_fd = args.ffconcatfile_fd
   elif args.ffconcatfile is None:
     self.ffconcatfile_fd, self.ffconcatfile = tempfile.mkstemp(suffix=".ffconcat", dir=pwd)
   else:
@@ -105,7 +126,7 @@ def _parse_args(self, args, run=False, out=False): # pylint: disable=too-many-br
     else:
       self.ffconcatfile = os.path.abspath(os.path.join(pwd, args.ffconcatfile))
     self.ffconcatfile_fd = None
-  self.ffloglevel = args.ffloglevel
+  self.ffloglevel = "quiet" if self.quiet else args.ffloglevel
   self.delimiter = args.delimiter
   self.relative = args.relative
   self.fps = args.fps
@@ -114,14 +135,18 @@ def _parse_args(self, args, run=False, out=False): # pylint: disable=too-many-br
 
   if run or out:
     aspectratio = _parse_aspect_ratio(args.aspectratio)
-    height = int((((args.width / aspectratio) * 2) + 0.5) / 2) # Round height to power of 2
-    width = int((((height * aspectratio) * 2) + 0.5) / 2) # Recalculate the width
+    width = round_towards_4_to_closest_pow_2(int(args.width + 0.5))
+    height = round_towards_4_to_closest_pow_2(int(width / aspectratio))
+    if round(aspectratio - (width / height), 3):
+      self.logger.warning("Requested aspect ratio {} is different from calculated {:.03f}, WxH = {}x{}"
+                          .format(aspectratio, width / height, width, height))
     if width != args.width:
-      self.logger.warning("Recalculated width does not match requested width: {0} != {1}\n"
+      self.logger.warning("Recalculated width does not match requested width: {0} != {1}. "
                           "Aspect ratio: {3}, WxH: {1}x{2}".format(args.width, width, height, aspectratio))
-    self.aspectratio = aspectratio
-    self.height = height
     self.width = width
+    self.height = height
+    if self.histogram:
+      self.showcqt_height = round_towards_4_to_closest_pow_2(int(height / 3))
     self.tempo = args.tempo
     self.jump = args.jump
     if args.audiofile is not None and not os.path.exists(args.audiofile):

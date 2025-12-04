@@ -4,604 +4,726 @@
 # This file is part of prelapse which is released under the AGPL-3.0 License.
 # See the LICENSE file for full license details.
 
+# You may convey verbatim copies of the Program's source code as you
+# receive it, in any medium, provided that you conspicuously and
+# appropriately publish on each copy an appropriate copyright notice;
+# keep intact all notices stating that this License and any
+# non-permissive terms added in accord with section 7 apply to the code;
+# keep intact all notices of the absence of any warranty; and give all
+# recipients a copy of this License along with the Program.
+
+# prelapse is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
 # runner/timing_builder.py
 
 import bisect
 
-from pprint import pformat
-
-from .parser_utils import correct_rounding_errors, print_function_entrance
+from ..common import print_function_entrance, round_up
 
 
-def linear_scale_indices(args, logger, timing=False):
-  # One function with two uses:
-  # 1. Calculating offsets when scaling between numbers of files.
-  # 2. Calculating diffs of timing intervals between num_files and num_frames.
-  print_function_entrance(logger, "7;38;5;77")
-  key_files_offsets, idx_from, idx_to, current, target = args
-  logger.debug("current: {} target: {} timing: {}".format(current, target, timing))
+def handle_zeroes(lst, goal, logger):
+  print_function_entrance(logger, "7;38;5;187")
+  list_length = len(lst)
+  if goal <= list_length:
+    alloc = [1] * goal + [0] * (list_length - goal)
+    logger.debug("goal = {}, list length = {}. Returning: {}".format(goal, list_length, alloc))
+    return alloc
 
-  if target == 1 and not timing:
-    logger.debug("indices 1: [0]")
-    return [0]
+  alloc = [1] * list_length
+  remaining_goal = goal - list_length
+  logger.debug("Input list: {}".format(lst))
+  while remaining_goal:
+    reduced_lst = [(i, round(x, 6)) for i, x in [(i, l - alloc[i] + 0.5) for i, l in enumerate(lst)] if x > 1]
+    # logger.debug("Remaining goal: {}, Reduced list: {}, allocated: {}".format(remaining_goal, reduced_lst, alloc))
+    if not reduced_lst:
+      logger.debug("Breaking out of doomed loop with nothing in the reduced list")
+      for i in range(remaining_goal):
+        alloc[i % list_length] += 1
+      break
+    for i, _ in reduced_lst:
+      if remaining_goal == 0:
+        break
+      alloc[i] += 1
+      remaining_goal -= 1
 
-  raw_scaled = [i * current / (target - (0 if timing else 1))
-                for i in range(target + (1 if timing else 0))]
-  key_range = (True if timing else
-               key_files_offsets[key_files_offsets.index(idx_from):
-                                 key_files_offsets.index(idx_to) + 1])
-
-  indices = correct_rounding_errors(current, logger, raw_scaled, key_files=key_range)
-  logger.debug("indices {}: {}".format(len(indices), indices))
-
-  if not timing:
-    missing_keys = [
-      {i: x} for i, x in enumerate(key_files_offsets)
-      if x - idx_from not in indices and idx_from <= x <= idx_to
-    ]
-    if missing_keys:
-      logger.warning("missing_keys: {}".format(missing_keys))
-      logger.warning("key_files_offsets: {}".format(key_files_offsets))
-      logger.warning("idx_from: {} idx_to: {}".format(idx_from, idx_to))
-
+  if sum(alloc) == goal and 0 not in alloc:
+    logger.debug("Reached goal: {}".format(goal))
   else:
-    diffs = [indices[i+1] - indices[i] for i in range(len(indices) - 1)]
-    logger.debug("{} {} {} diffs".format([0]+diffs, sum(diffs), len(diffs)))
+    raise RuntimeError("Unable to handle zeroes in correction. goal: {} allocated: {} {}"
+                       .format(goal, sum(alloc), alloc))
 
-  logger.debug("Scaled indices:\n{}".format(indices))
-  return indices
-
-
-def append_group_timings(args, logger):
-  group, file_idx, running_timestamp, duration= args
-  new_entry = {
-    "file": group["files"][file_idx],
-    "timestamp": round(running_timestamp, 6),
-    "inpoint": round(running_timestamp, 6),
-    "outpoint": round(running_timestamp + duration, 6),
-    "duration": duration,
-  }
-  print_function_entrance(logger, "7;38;5;216")
-  logger.debug(pformat(new_entry))
-  return new_entry
+  logger.debug("updated list: {}".format(alloc))
+  return alloc
 
 
-def validate_timestamp_alignment(running, expected, logger):
-  if round(running, 3) != expected:
-    logger.warning(
-      "running timestamp {} != timestamp {}"
-      .format(round(running, 3), expected))
-    raise RuntimeError(
-      "running timestamp {} != timestamp {}"
-      .format(round(running, 3), expected))
-  return expected
+def handle_over_under_rounding(alloc, lst, goal, logger, catch_zeroes=None):
+  print_function_entrance(logger, "7;38;5;188")
+  sum_lst = sum(alloc)
+  diff = goal - sum_lst
+  logger.debug("error {}, goal {}, current_sum {}".format(diff, goal, sum_lst))
+  logger.debug("current list: {}".format(alloc))
+  step = 1 if diff > 0 else -1
+  while diff != 0:
+    candidates = sorted(((i, l, round(l - lst[i], 3)) for i, l in enumerate(alloc)),
+                        key=lambda x: (x[2], x[0]), reverse=step < 0)
+    logger.debug("candidates: {}".format(candidates))
+    if step < 0:
+      candidates = [(i, l, r) for i, l, r in candidates if l > 1]
+      if catch_zeroes is not None and catch_zeroes != []:
+        excluded_candidates = [i for i, x in enumerate(alloc) if i in catch_zeroes and x > 0]
+        logger.debug("excluded_candidates: {}".format(excluded_candidates))
+        for i in reversed(excluded_candidates):
+          if alloc[i] <= 0:
+            continue
+          alloc[i] += step
+          diff -= step
+          logger.debug("Setting idx {} to {}. Diff now {}".format(i, alloc[i], diff))
+          if diff == 0:
+            break
+        if diff == 0:
+          break
+      if candidates == []:
+        logger.debug("Manually reducing alloc by {}".format(diff))
+        i = len(alloc) - 1
+        while diff:
+          if alloc[i] <= 0:
+            i -= 1
+            continue
+          alloc[i] += step
+          diff -= step
+          i -= 1
+        if i < 0:
+          raise RuntimeError("Finished reassigning all alloc to 0: {}".format(alloc))
+        break
+      # logger.debug("updated candidates above 1: {}".format(candidates))
+    target = candidates[0][0]
+    logger.debug("target: [{}] = {} -> {}".format(target, alloc[target], alloc[target] + step))
+    alloc[target] += step
+    diff -= step
+  if diff != 0:
+    raise RuntimeError("Badly miscalculated diff: {}.".format(diff))
+  logger.debug("updated list: {}".format(alloc))
+  return alloc
 
 
-def add_label_timing(group, mark, timestamp, logger):
-  timing = {"label": mark["raw_line"], "timestamp": timestamp}
-  group["timings"].append(timing)
-  logger.debug("\nAdded timings: \t{}\n".format(timing))
+def correct_rounding_errors(logger, goal, lst, catch_zeroes=None):
+  alloc = [round_up(i) for i in lst]
+
+  # Guard against allocating zero for a segment
+  if 0 in alloc and not catch_zeroes:
+    print_function_entrance(logger, "7;38;5;189")
+    logger.debug("detected zeros in list: {}".format(alloc))
+    alloc = handle_zeroes(lst, goal, logger)
+  # Guard against over/under allocating after rounding
+  sum_lst = sum(alloc)
+  if goal != sum_lst:
+    print_function_entrance(logger, "7;38;5;189")
+    alloc = handle_over_under_rounding(alloc, lst, goal, logger, catch_zeroes)
+    sum_lst = sum(alloc)
+
+  if 0 in alloc:
+    logger.debug("Zeroes still present - goal: {}, {}".format(goal, alloc))
+  if goal != sum_lst:
+    raise RuntimeError("Still off by {}".format(goal - sum_lst))
+  return alloc
 
 
-def handle_hold_or_single_file(args, logger):
-  group, mark, file_idx, timestamp = args
-  if mark["hold"]:
-    file_idx = mark["key_files_offsets"][0]
-  logger.debug("hold? {} num_files {}".format(mark["hold"], mark["num_files"]))
-  duration = mark["duration"]
-  if file_idx >= len(group["files"]):
-    file_idx -= 1
-  group["timings"].append(append_group_timings((group, file_idx, timestamp, duration), logger))
-  file_idx += 1
-  logger.debug("incrementing file_idx {} with duration {}".format(file_idx, duration))
-  return file_idx, timestamp + duration
+def process_repeat(ins, init_offset, key_file_offsets, logger):
+  repeat_count = ins["value"]
+  if repeat_count <= 1:
+    raise ValueError("Invalid repeat count value: {}".format(repeat_count))
+  num_files_to_repeat = round_up((ins["num_files_to"] - init_offset) / (repeat_count - 1))
+  logger.debug("repeat_count: {}, num files to repeat: {}".format(repeat_count, num_files_to_repeat))
+  running_total = init_offset
+  if init_offset == key_file_offsets[-1] and len(key_file_offsets) > 2:
+    offsets_snapshot = key_file_offsets[1:-1]
+  else:
+    offsets_snapshot = key_file_offsets[1:]
+  for _ in range(repeat_count - 1):
+    for offset in offsets_snapshot:
+      candidate = running_total + offset
+      if candidate not in key_file_offsets:
+        key_file_offsets.append(candidate)
+    running_total += num_files_to_repeat
+    if running_total not in key_file_offsets:
+      key_file_offsets.append(running_total)
+  if running_total != ins["num_files_to"]:
+    raise RuntimeError("Miscalculated repeating running_total: {}. Should be {}"
+                       .format(running_total, ins["num_files_to"]))
+  return key_file_offsets
 
 
-def handle_zero_segment(args, logger):
-  group, mark, timestamp = args
-  logger.debug("hold? {} num_files {}".format(mark["hold"], mark["num_files"]))
-  duration = mark["duration"]
-  idx = mark["key_files_offsets"][0]
-  group["timings"].append(append_group_timings((group, idx, timestamp, duration), logger))
-  return timestamp + duration
-
-
-def generate_file_indices(args, logger):
-  kf_offsets, idx_from, idx_to, n_from, n_to = args
-  if n_to == n_from:
-    return [i + idx_from for i in range(n_to)]
-  assert n_to != 0
-  return [offset + idx_from for offset in linear_scale_indices((kf_offsets, idx_from, idx_to, n_from, n_to), logger)]
-
-
-def get_file_indices_for_segment(args, logger):
-  kf_offsets, kf_diffs, segment_idx, n_to = args
-  # Retrieves the indices for the files associated with a segment.
-  try:
-    n_from = kf_diffs[segment_idx]
-  except IndexError as e:
-    raise IndexError("Index {} into key_files_diffs (length: {}) failed."
-                     .format(segment_idx, len(kf_diffs))) from e
-
-  idx_from = kf_offsets[segment_idx]
-  idx_to = kf_offsets[segment_idx + 1]
-  assert len(kf_offsets) > 1, "kf_offsets only has one entry"
-
-  file_indices = generate_file_indices((kf_offsets, idx_from, idx_to, n_from, n_to), logger)
-  return n_from, idx_from, idx_to, file_indices
-
-
-def calculate_timing_diffs(args, logger):
-  frames, n_to, framerate, kf_offsets, idx_from, idx_to = args
-  if n_to == 1:
-    return [round(frames / framerate, 6)]
-  if frames == n_to:
-    return [round(1 / framerate, 6)] * frames
-  scaled = linear_scale_indices((kf_offsets, idx_from, idx_to, frames, n_to), logger, True)
-  return [round((scaled[n + 1] - scaled[n]) / framerate, 6) for n in range(n_to)]
-
-
-def validate_and_update_files(args, logger):
-  group, file_indices, kf_diffs, mark, timing_diffs, segment_idx, timestamp, file_idx = args
-  # Iterates over files for a segment and updates the group's timing.
-  for i, _ in enumerate(file_indices):
-    # Protect from going over the edge of the files list
-    current_file_idx = min(file_indices[i], len(group["files"]) - 1)
-    try:
-      _ = group["files"][current_file_idx]
-    except IndexError as e:
-      logger.error("Invalid file_idx {} (max {})".format(current_file_idx, len(group["files"]) - 1))
-      raise IndexError("file_idx {} into key_files_diffs (length: {}) caused exception."
-                       .format(current_file_idx, len(kf_diffs))) from e
-
-    duration = timing_diffs[i]
-    logger.debug("Segment {}: setting file_idx {} with duration {}"
-                 .format(segment_idx, current_file_idx, duration))
-    group["timings"].append(append_group_timings((group, current_file_idx, timestamp, duration), logger))
-    logger.debug("Segment {}: Adding duration {} to running_timestamp {:.3f}"
-                 .format(segment_idx, duration, timestamp))
-    timestamp += duration
-    file_idx = current_file_idx
-
-    if round(timestamp, 6) > round(mark["timestamp"] + mark["duration"], 6):
-      logger.debug("Segment {}: running_timestamp {} > timestamp + duration {}"
-             .format(segment_idx, round(timestamp,6), round(mark["timestamp"] + mark["duration"],6)))
-      logger.debug(len(group["files"]))
-      # Notice that we’re using a generator expression here.
-      logger.debug(sum(sum(m['key_files_diffs']) for m in group["marks"]), max(1, len(group["files"]) - 1))
-      raise RuntimeError("Segment {}: Timestamp overflow – this shouldn't happen!".format(segment_idx))
-  return file_idx, timestamp
-
-
-def process_segment(args, logger): # pylint: disable=too-many-locals
-  segment_idx, mark, group, file_idx, timestamp, framerate = args
-  # Extract frequently used mark information.
-  kf_offsets = mark["key_files_offsets"]
-  kf_diffs = mark["key_files_diffs"]
-  total_frames = mark["play_num_frames"]
-  segment_frames = mark["segment_frames"]
-
-  # Compute maximum frames for all segments.
-  segment_max_frames = correct_rounding_errors(
-    total_frames, logger,
-    [(seg * total_frames) / sum(segment_frames) for seg in segment_frames])
-
-  n_to = segment_frames[segment_idx]
-
-  logger.debug("Segment {}: num_files_to {} / num_files_from (from diff lookup) will be derived below."
-               .format(segment_idx, n_to))
-  logger.debug("Segment {}: Total frames: {}. Frame distribution: {}."
-               .format(segment_idx, total_frames, segment_frames))
-
-  # Obtain file indices for the segment.
-  n_from, idx_from, idx_to, file_indices = get_file_indices_for_segment(
-    (kf_offsets, kf_diffs, segment_idx, n_to), logger)
-  logger.debug("Segment {}: idx_from: {}, idx_to: {}, n_from: {}, n_to: {}, mark num_frames: {}"
-               .format(segment_idx, idx_from, idx_to, n_from, n_to, mark["num_frames"]))
-
-  # Compute timing differences (assuming calculate_timing_diffs is defined).
-  timing_diffs = calculate_timing_diffs(
-    (segment_max_frames[segment_idx], n_to, framerate, kf_offsets, idx_from, idx_to), logger)
-  logger.debug("Segment {}: timing_diffs: len {}, sum {:.3f}, diffs: {}"
-               .format(segment_idx, len(timing_diffs), sum(timing_diffs), timing_diffs))
-
-  # Update file list and timings inside the segment.
-  file_idx, timestamp = validate_and_update_files(
-    (group, file_indices, kf_diffs, mark, timing_diffs, segment_idx, timestamp, file_idx), logger)
-  logger.debug("Segment {}: completed. Updated timestamp: {:.3f}.".format(segment_idx, timestamp))
-  logger.debug("Segment {}: mark details:\n{}".format(segment_idx, pformat(mark)))
-  return file_idx, timestamp
-
-
-def handle_segment_distribution(args, logger):
-  mark, group, file_idx, timestamp, framerate = args
-  num_segment_frames = len(mark["segment_frames"])
-  for idx in range(num_segment_frames):
-    file_idx, timestamp = process_segment((idx, mark, group, file_idx, timestamp, framerate), logger)
-
-  return file_idx, timestamp
-
-
-def validate_final_timestamp(actual, expected, logger):
-  if round(actual, 6) != expected:
-    logger.info("{}, {}".format(round(actual, 6), expected))
-    raise RuntimeError("Miscalculated timestamps. Needs manual inspection.")
-
-
-def build_timings(group, framerate, logger):
-  print_function_entrance(logger, "7;38;5;220", group["label"]["label"])
-  file_idx = 0
-  group["timings"] = []
-  running_timestamp = group["timestamp_start"]
-  logger.debug("group timestamp_start {:.3f} end {:.3f}"
-               .format(group["timestamp_start"], group["timestamp_end"]))
-
-  for mark in group["marks"]:
-    running_timestamp = validate_timestamp_alignment(running_timestamp, mark["timestamp"], logger)
-    add_label_timing(group, mark, running_timestamp, logger)
-
-    if mark["hold"] or 1 == mark["num_files"] or 1 == len(group["files"]):
-      file_idx, running_timestamp = handle_hold_or_single_file((group, mark, file_idx, running_timestamp), logger)
-
-    elif sum(mark["segment_frames"]) == 0:
-      running_timestamp = handle_zero_segment((group, mark, running_timestamp), logger)
-      logger.debug("keeping file_idx to {} and setting from key_files_offsets {} with duration {}"
-                   .format(file_idx, mark["key_files_offsets"][0], mark["duration"]))
-    else:
-      file_idx, running_timestamp = handle_segment_distribution((
-        mark, group, file_idx, running_timestamp, framerate), logger)
-
-  validate_final_timestamp(running_timestamp, group["timestamp_end"], logger)
+def process_boomerang(ins, init_offset, key_file_offsets, logger):
+  running_total = init_offset - 1
+  offsets_snapshot = key_file_offsets[:]
+  logger.debug("boom diff: {}".format(ins["num_files_to"] - init_offset))
+  for i in range(len(offsets_snapshot) - 1):
+    this_offset = offsets_snapshot[i+1] - offsets_snapshot[i]
+    candidate = running_total + this_offset
+    if candidate not in key_file_offsets:
+      key_file_offsets.append(candidate)
+    running_total += this_offset
+  return key_file_offsets
 
 
 def get_key_file_offsets_from_replay_stack(group, logger):
   print_function_entrance(logger, "7;38;5;164")
-  last_file_idx = len(group["files"])
+  last_file_idx = group["num_files"]
   if "replay_stack" not in group:
     return [0, last_file_idx]
   key_file_offsets = [0]
   for ins in group["replay_stack"]:
-    # pprint(ins)
     init_offset = ins["num_files_from"]
     if init_offset not in key_file_offsets:
       key_file_offsets.append(init_offset)
     if ins["instruction"] == "rep":
-      repeat_val = ins["value"]
-      num_files_to_repeat = int((ins["num_files_to"] - init_offset) / (repeat_val - 1))
-      running_total = init_offset
-      offsets_snapshot = key_file_offsets[1:
-        -1 if init_offset == key_file_offsets[-1] and len(key_file_offsets) > 2 else None]
-      for i in range(repeat_val - 1):
-        for offset in offsets_snapshot:
-          if running_total + offset - 1 not in key_file_offsets:
-            key_file_offsets.append(running_total + offset - 1)
-        running_total += num_files_to_repeat
-        if running_total not in key_file_offsets:
-          key_file_offsets.append(running_total)
+      key_file_offsets = process_repeat(ins, init_offset, key_file_offsets, logger)
     elif ins["instruction"] == "boom":
-      diff = int(ins["num_files_to"] - init_offset)
-      logger.debug("boom diff: {}".format(diff))
-      running_total = init_offset
-
-      offsets_snapshot = key_file_offsets[:]
-      for i in range(len(offsets_snapshot) - 1):
-        this_offset = offsets_snapshot[i+1] - offsets_snapshot[i] - 1
-        if running_total + this_offset not in key_file_offsets:
-          key_file_offsets.append(running_total + this_offset)
-        running_total += this_offset
+      key_file_offsets = process_boomerang(ins, init_offset, key_file_offsets, logger)
     if "num_files_to" in ins and ins["num_files_to"] not in key_file_offsets:
-      key_file_offsets.append(ins["num_files_to"])
-  assert last_file_idx in key_file_offsets, ("last_file_idx {} not in key_file_offsets {}"
-                                             .format(last_file_idx, key_file_offsets))
+      raise RuntimeError("instruction num_files_to {} not in key_file_offsets: {}"
+                         .format(ins["num_files_to"], key_file_offsets))
+
+  if len(key_file_offsets) < 2:
+    raise RuntimeError("not enough entries in key_file_offsets to continue: {}".format(key_file_offsets))
+  if last_file_idx not in key_file_offsets:
+    raise RuntimeError("last_file_idx {} not in key_file_offsets {}".format(last_file_idx, key_file_offsets))
   return key_file_offsets
 
 
-def set_remaining_goal(goal, fixed, marks, logger):
-  print_function_entrance(logger, "7;38;5;93")
-  allocations = [1 if i in fixed else None for i in range(len(marks))]
-  remaining_goal = goal - len(fixed)
-
-  if remaining_goal <= 1:
-    if goal == 1:
-      logger.debug("Hard coded 1 allocation with goal = 1")
-      return [1], None, True
-    for idx, allocation in enumerate(allocations):
-      if allocation is None:
-        if remaining_goal > 0:
-          allocations[idx] = 1
-          remaining_goal -= 1
-        else:
-          allocations[idx] = 0
-    logger.debug("Hard coded allocation for only 1 file {}".format(allocations))
-    return allocations, None, True
-  return allocations, remaining_goal, False
-
-
-def fixup_scaled_allocations(args, logger):
-  goal, allocations, scaled_allocations, fixed, non_fixed, remaining_goal = args
-  newly_fixed = {*sorted((k for k, v in scaled_allocations.items() if v < 1),
-                          key=lambda k: scaled_allocations[k], reverse=True)}
-
-  if newly_fixed and len(newly_fixed) <= remaining_goal:
-    logger.debug("newly_fixed {}".format(newly_fixed))
-    left_over_non_fixed = len(non_fixed - newly_fixed)
-    current_allocations_total = sum(x for x in allocations if x)
-    fixable_allocations_to_go = remaining_goal - left_over_non_fixed
-    logger.debug("current_allocations_total {}, left_over_non_fixed {}, fixable_allocations_to_go {}, remaining_goal {}"
-                 .format(current_allocations_total, left_over_non_fixed, fixable_allocations_to_go, remaining_goal))
-    if len(newly_fixed) > fixable_allocations_to_go:
-      logger.debug("More allocations than files, need to set some to 0")
-      while len(newly_fixed) > fixable_allocations_to_go:
-        to_pop = list(newly_fixed)[-1]
-        allocations[to_pop] = 0
-        newly_fixed.remove(to_pop)
-
-    for i in newly_fixed:
-      allocations_to_go = goal - len(newly_fixed) + left_over_non_fixed - current_allocations_total
-      logger.debug("current_allocations_total {}, allocations_to_go {}, remaining_goal {}"
-                   .format(current_allocations_total, allocations_to_go, remaining_goal))
-      allocations[i] = 1
-      current_allocations_total += 1
-      remaining_goal -= 1
-      fixed |= {i}
-      non_fixed -= {i}
-      if remaining_goal == 0:
-        allocations = [0 if x is None else x for x in allocations]
-        logger.debug("Finished forcing allocations: {}".format(allocations))
-        break
-      logger.debug("Forcing segment {} to {}: {}".format(i, allocations[i], allocations))
+def calculate_tempo_weights(non_hold_indices, logger):
+  print_function_entrance(logger, "7;38;5;35")
+  all_durations = []
+  all_tempos = []
+  tempo_scaled_durations = []
+  for _, mark in non_hold_indices:
+    all_durations.append(mark["raw_duration"])
+    all_tempos.append(mark["tempo"])
+    tempo_scaled_durations.append(mark["tempo"] * mark["raw_duration"])
+  sum_tempo_scaled_durations = sum(tempo_scaled_durations)
+  tempo_ratio = 1 / sum_tempo_scaled_durations
+  weights = [(i, mark["raw_duration"] * mark["tempo"] * tempo_ratio) for i, mark in non_hold_indices]
+  printable_weights = ["{}: {:.03f}".format(i, w) for i, w in weights]
+  logger.debug("All tempos: {}, Tempo Ratio: {:.06f} Sum: {:.03f}".format(all_tempos, tempo_ratio, sum(all_tempos)))
+  logger.debug("All durations: {}, Sum: {:.03f}".format(all_durations, sum(all_durations)))
+  logger.debug("Tempo scaled durations: {}, Sum: {:.03f}".format(tempo_scaled_durations, sum_tempo_scaled_durations))
+  logger.debug("Total weights: {}, Sum {:.03f}".format(printable_weights, sum(w for _, w in weights)))
+  return weights
 
 
-def round_all_allocations(args, logger):
-  goal, allocations, scaled_allocations, fixed, non_fixed, _ = args
+def distribute_non_hold_files(remaining_goal, alloc, non_hold_indices, logger):
+  print_function_entrance(logger, "7;38;5;34")
+  weights = calculate_tempo_weights(non_hold_indices, logger)
+  no_frames = [i for i, (_, mark) in enumerate(non_hold_indices) if mark["num_frames"] == 0]
+  if no_frames != []:
+    logger.debug("no available frames for indices: {}".format(no_frames))
+  rounded = correct_rounding_errors(logger, remaining_goal,
+                                    [max(1, remaining_goal * weight) for _, weight in weights], catch_zeroes=no_frames)
+  for i, (idx, _) in enumerate(weights):
+    alloc[idx] = rounded[i]
+  return alloc
 
-  if len(non_fixed) < goal:
-    fixup_scaled_allocations(args, logger)
-  # Round down allocations
-  allocations_int = {i: int(scaled_allocations[i]) for i in non_fixed}
 
-  # Compute remaining files after flooring
-  allocated_so_far = sum(allocations_int.values()) + len(fixed)
-  remaining_files = goal - allocated_so_far
-
-  logger.debug("Allocated so far: {}, Remaining files: {}".format(allocated_so_far, remaining_files))
-
-  if remaining_files > 0:
-    # Sort non-fixed marks by largest fractional remainder
-    fractional_parts = {i: scaled_allocations[i] - allocations_int[i] for i in non_fixed}
-    sorted_indices = sorted(
-      non_fixed,
-      key=lambda i: (-scaled_allocations[i] if allocations_int[i] == 0 else 0, -fractional_parts[i]))
-    logger.debug("Non-fixed indices sorted by fractional parts: {}"
-                  .format([{'i': i, 'frac_parts': round(fractional_parts[i], 3)} for i in sorted_indices]))
-
-    for i in sorted_indices[:remaining_files]:
-      allocations_int[i] += 1
-  else:
-    logger.debug("More marks than files!")
-
-  # Assign final allocations
-  for i in non_fixed:
-    allocations[i] = allocations_int[i]
-
-  if allocations[0] == 0:
-    first_non_zero_index = next((index for index, value in enumerate(allocations) if value != 0), -1)
-    allocations[first_non_zero_index] -= 1
-    allocations[0] += 1
-  return allocations
+def redistribute_frames(group, logger):
+  print_function_entrance(logger, "7;38;5;36")
+  marks = group["marks"]
+  first_mark_idx, first_mark = 0, marks[0]
+  for idx in range(1, len(marks)):
+    mark = marks[idx]
+    if mark["timestamp"] != first_mark["timestamp"]:
+      first_mark_idx, first_mark = idx, mark
+      continue
+    if mark["duration"] == 0:
+      continue
+    old_num_frames = mark["num_frames"]
+    if mark["hold"] and not first_mark["hold"] and first_mark_idx != 0:
+      logger.debug("Not copying {} out of {} frames from idx {} to {} because it's a hold"
+                    .format(mark["num_frames"], old_num_frames, idx, first_mark_idx))
+      continue
+    updated_duration = mark["duration"]
+    if mark["num_frames"] > 1:
+      diff = idx - first_mark_idx
+      if diff > 1:
+        for i in range(idx - 1, first_mark_idx - 1, -1):
+          if marks[i]["hold"]:
+            first_mark_idx, first_mark = i, marks[i]
+      one_frame = round(mark["duration"] / mark["num_frames"], 6)
+      updated_duration = first_mark["duration"] = one_frame
+      first_mark["num_frames"] = 1
+      mark["duration"] = round(mark["duration"] - one_frame, 6)
+      mark["num_frames"] -= 1
+    else:
+      first_mark["duration"] = mark["duration"]
+      first_mark["num_frames"] = mark["num_frames"]
+      mark["duration"] = mark["num_frames"] = mark["num_files"] = 0
+    logger.debug("Copying {} out of {} frames from idx {} to {}"
+                  .format(first_mark["num_frames"], old_num_frames, idx, first_mark_idx))
+    new_timestamp = round(first_mark["timestamp"] + updated_duration, 6)
+    while idx > first_mark_idx and first_mark["timestamp"] == mark["timestamp"]:
+      logger.debug("Setting new timestamp for idx {}: {:.03f}".format(idx, new_timestamp))
+      mark["timestamp"] = new_timestamp
+      idx -= 1
+      mark = marks[idx]
 
 
 def distribute_files_among_marks(group, logger):
-  """
-  Distribute group["files"] among the group's mark segments.
-  Holds (where mark["hold"] is True) are fixed to 1. The remaining marks
-  receive weighted allocations based on (num_frames * tempo * tempo_ratio).
-
-  Segments with an allocation < 1 are rounded up to 1 first.
-  The remaining files are distributed using rounding based on fractional parts.
-
-  Returns a list of allocations (one per mark).
-  """
   print_function_entrance(logger, "7;38;5;33")
-  goal = len(group["files"])
-  marks = group["marks"]
+  goal = group["num_files"]
+  holds = group["holds"]
+  if goal < 1:
+    raise RuntimeError("Number of playable files in group is 0: '{}'".format(group["label"]["label"]))
+  num_marks = len(group["marks"])
+  alloc = [1] + [0] * (num_marks - 1)
+  hold_indices, non_hold_indices = [], []
+  for i, mark in sorted(enumerate(group["marks"]),
+                        key=lambda x: (x[0] == 0, x[1]["duration"], x[1]["timestamp"],
+                                       x[1]["timestamp"] - x[1]["raw_timestamp"], x[0]), reverse=True):
+    logger.debug("{}: {}".format(i, mark))
+    (hold_indices if mark["hold"] else non_hold_indices).append((i, mark))
 
-  fixed = {i for i, mark in enumerate(marks) if mark["hold"]}
+  logger.debug("Initial goal: {}, num_marks: {}, num_holds: {}{}"
+               .format(goal, num_marks, holds, ", hold_indices: {}"
+                       .format([i for i, _ in hold_indices]) if holds else ""))
+  for i, _ in hold_indices:
+    alloc[i] = 1
+    if sum(alloc) == goal:
+      logger.debug("Reached allocation goal while distributing holds. Allocations: {}".format(alloc))
+      return alloc
 
-  while goal - len(fixed) < 1:
-    #reduce the number of files in the assigned lists to match actual number of files
-    fixed = set(list(fixed)[:-1])
-
-  allocations, remaining_goal, ret = set_remaining_goal(goal, fixed, marks, logger)
-  if ret:
-    return allocations
-
-  logger.debug("Initial goal: {}, Fixed indices (holds): {}".format(goal, fixed))
-
-  non_fixed = set(range(len(marks))) - fixed
-
-  # Compute total weight of non-fixed marks
-  all_tempos = [marks[i]["tempo"] for i in non_fixed]
-  assert sum(all_tempos) != 0, "all_tempos sum is 0"
-  logger.debug("len(all_tempos) {} / sum(all_tempos) {}".format(len(all_tempos), sum(all_tempos)))
-  tempo_ratio = len(all_tempos) / sum(all_tempos)
-  total_weight = sum(marks[i]["num_frames"] * marks[i]["tempo"] * tempo_ratio for i in non_fixed)
-  logger.debug("Total weight: {}, Remaining goal: {}".format(total_weight, remaining_goal))
-
-  if total_weight <= 0:  # Edge case: no weight left, distribute equally
-    scaled_allocations = {i: round(remaining_goal / len(non_fixed), 6) for i in non_fixed}
-  else:
-    weight_factor = remaining_goal / total_weight
-    scaled_allocations = {
-      i: round(marks[i]["num_frames"] * marks[i]["tempo"] * tempo_ratio * weight_factor, 6)
-      for i in non_fixed}
-
-  sum_scaled = round(sum(scaled_allocations.values()), 3)
-  logger.debug("Scaled allocations: {}".format(scaled_allocations))
-  logger.debug("Sum Scaled allocations: {}".format(sum_scaled))
-
-  allocations = round_all_allocations(
-    (goal, allocations, scaled_allocations, fixed, non_fixed, remaining_goal), logger)
-  logger.debug("Final distribution: {}".format(allocations))
-  return allocations
+  # Discount the "for safety" first allocation if it's not a hold
+  remaining_goal = goal - (sum(alloc) - int(not group["marks"][0]["hold"]))
+  if remaining_goal <= 0:
+    raise RuntimeError("Badly miscalculated remaining_goal: {}.\n{}".format(remaining_goal, alloc))
+  alloc = distribute_non_hold_files(remaining_goal, alloc, non_hold_indices, logger)
+  sum_alloc = sum(alloc)
+  if sum_alloc != goal:
+    raise RuntimeError("sum(alloc) {} != goal {}".format(sum_alloc, goal))
+  logger.debug("Allocations: {} {}".format(alloc, sum_alloc))
+  return alloc
 
 
 def prepare_mark_data(group, files_offsets, logger):
   print_function_entrance(logger, "7;38;5;60")
-  group_num_files = len(group["files"])
-  num_files_offsets = len(files_offsets)
-  num_marks = len(group["marks"])
+  marks = group["marks"]
+  num_frames_offsets = [mark["num_frames"] for mark in marks]
+  num_frames = sum(num_frames_offsets)
 
-  # Identify which marks are fixed (holds)
-  fixed = {i for i, mark in enumerate(group["marks"])
-           if mark["hold"] and files_offsets[i]}
-  num_frames_offsets = [mark["num_frames"] for mark in group["marks"]]
-
+  assert num_frames_offsets[0] != 0 or (num_frames_offsets[0] == 0 and num_frames == 0)
   # Reduce the duration scaled offsets by the number of frames available.
-  smallest = [
-    1 if i in fixed else min(files_offsets[i], num_frames_offsets[i])
-    for i in range(num_marks)]
+  smallest = [min(files_offsets[i], num_frames_offsets[i]) for i, _ in enumerate(marks)]
   sum_smallest = sum(smallest)
-  goal = [0 if i in fixed else n for i, n in enumerate(num_frames_offsets)]
-  logger.debug("goal: {}".format(goal))
 
-  logger.debug("{} {} num_frames".format(num_frames_offsets, sum(num_frames_offsets)))
+  logger.debug("{} {} num_frames".format(num_frames_offsets, num_frames))
   logger.debug("{} {} files_offsets".format(files_offsets, sum(files_offsets)))
-  logger.debug("{} {} smallest".format(smallest, sum_smallest))
+  logger.debug("{} {} smallest (playable files or frames)".format(smallest, sum_smallest))
+  if sum_smallest < num_frames and sum_smallest < sum(files_offsets):
+    logger.debug("Smallest is less than both num frames and files")
 
-  if (sum_smallest >= group_num_files and len(smallest) > 1):
-    logger.debug("sum smallest {} num files {}".format(sum_smallest, group_num_files))
-    if sum_smallest > group_num_files:
-      while sum_smallest > group_num_files:
-        smallest_order = sorted((i for i, v in enumerate(goal) if v > 0 and smallest[i] > 0), key=lambda i: goal[i])
-        goal[smallest_order[0]] += 1
-        smallest[smallest_order[0]] -= 1
-        sum_smallest = sum(smallest)
-        logger.debug("adjusted indice {}".format(smallest_order[0]))
-      logger.debug("sum smallest {} num files {}".format(sum_smallest, group_num_files))
-  else:
-    smallest_correction = correct_rounding_errors(
-      sum(goal), logger,
-      [0 if i in fixed else files_offsets[i] * sum(goal) / (group_num_files - group["holds"])
-       for i in range(num_files_offsets)])
+  group_num_files = group["num_files"]
+  if sum_smallest != group_num_files:
+    dropped = group_num_files - sum_smallest
+    logger.debug("Dropping {} file{}".format(dropped, "s" if dropped > 1 else ""))
 
-    logger.debug("{} {} smallest_correction"
-                .format(smallest_correction, sum(smallest_correction)))
-    # Now we have the final tempo scaled files distribution, allocate num_files.
-    smallest = [ # Add back in the holds
-      max(1, min(smallest_correction[i], num_frames_offsets[i], files_offsets[i]))
-      for i in range(len(smallest))]
-
-  logger.debug("{} {} smallest".format(smallest, sum(smallest)))
+  if sum_smallest > group_num_files:
+    raise RuntimeError("allocated more files {} than group_num_files {}".format(sum_smallest, group_num_files))
   return smallest
 
 
-def compute_segment_slices(key_files_indices, files_offsets, group, logger):
+def compute_segment_slices(group, files_offsets, logger):
+  key_files_indices = get_key_file_offsets_from_replay_stack(group, logger)
+  logger.debug("{} raw key_files_indices".format(key_files_indices))
+
   print_function_entrance(logger, "7;38;5;54")
   total_files = sum(files_offsets)
-  group_num_files = len(group["files"])
+  logger.debug("files_offsets {}: {}".format(total_files, files_offsets))
+  total_frames = [m["num_frames"] for m in group["marks"]]
+  logger.debug("total_frames: {}".format(total_frames))
+  group_num_files = group["num_files"]
 
-  assert total_files == group_num_files, "sum(files_offsets)={} != group_num_files={}".format(
-    total_files, group_num_files)
+  if total_files != group_num_files:
+    logger.warning("total_files {} != group_num_files {}".format(total_files, group_num_files))
+    group_num_files = total_files
 
   running_total = 0
   prev_key_pos = 0
   segment_slices = []
-  segment_offsets = []
+
   for num_files in files_offsets:
     running_total += num_files
-    if running_total not in key_files_indices:
-      bisect.insort_left(key_files_indices, running_total) # ensure `running_total` is in the list
+    if running_total not in key_files_indices: # ensure `running_total` is in the list
+      bisect.insort_left(key_files_indices, running_total)
     key_pos = key_files_indices.index(running_total)
-    if running_total not in segment_offsets:
-      segment_offsets.append(running_total)
-    slice_ = key_files_indices[prev_key_pos:key_pos+1]
-    assert slice_, "Expected non-empty segment slice"
+    slice_ = key_files_indices[prev_key_pos:key_pos + 1]
+    if num_files == 0:
+      if not slice_[-1] > 0:
+        if sum(total_frames) == 0:
+          logger.debug("No frames available in group, keep going")
+        else:
+          raise RuntimeError("Last indice of slice is not > 0: {}".format(slice_))
+      else:
+        slice_[-1] = running_total - 1
+    if slice_ == []:
+      raise RuntimeError("Expected non-empty segment slice")
     segment_slices.append(slice_)
-    logger.debug("slice {}: {}\tkey_pos {} for frame/idx {}\tnum_files: {}\tsegment_offsets: {}"
-                 .format(len(segment_slices), slice_, key_pos, running_total, num_files, segment_offsets))
+    slice_to = key_files_indices[key_pos] - 1
+    slice_from = min(slice_to, key_files_indices[prev_key_pos])
+    logger.debug("slice {}: {}\tfor segment {}\tslice {}\trunning_total: {}\tnum_files: {}"
+                 .format(len(segment_slices), slice_, key_pos,
+                         "{} -> {}".format(slice_from, slice_to) if slice_from != slice_to else slice_from,
+                         running_total, num_files))
     logger.debug("segment_slices: {}".format(segment_slices))
     prev_key_pos = key_pos
-  assert running_total == group_num_files, ("running total offset miscalculation! {} != {}"
-                                            .format(running_total, group_num_files))
+  if running_total != group_num_files:
+    raise RuntimeError("running total offset miscalculation! {} != {}".format(running_total, group_num_files))
 
   logger.debug("{} updated key_files_indices".format(key_files_indices))
-  logger.debug("{} segment_offsets".format(segment_offsets))
   logger.debug("{} segment_slices".format(segment_slices))
-  if sum(segment_offsets) == 0 and len(segment_offsets) > 1:
-    segment_slices[0] = [1]
-    logger.debug("manually updating {} segment_slices".format(segment_slices))
   return segment_slices
 
 
 def update_marks_with_segment_data(group, segment_slices, smallest, logger):
   print_function_entrance(logger, "7;38;5;56")
-  group_num_files = len(group["files"])
-  num_marks = len(group["marks"])
-
   for i, mark in enumerate(group["marks"]):
     seg = segment_slices[i]
     num_files = smallest[i]
-
-    # Compute key_files_diffs based on the segment slice.
-    if seg[-1]-seg[0] == 0:
-      assert num_marks > 1
+    if seg[-1] - seg[0] == 0 and seg != [0]:
       key_files_diffs = [0]
       logger.debug("Compensate: using key_files_diffs = {} for mark {}".format(key_files_diffs, i))
     else:
-      # Compute differences between consecutive key file indices.
       key_files_diffs = [seg[idx + 1] - seg[idx] for idx in range(len(seg) - 1)]
-
-
-    # Determine segment_frames with rounding correction if applicable.
-    if num_files > 1:
-      # Scale each diff to contribute to num_files.
-      # Guard against division by zero:
+    # Determine segment_files with rounding correction if applicable.
+    if num_files <= 1 or (num_files == key_files_diffs[0] and len(key_files_diffs) == 1):
+      segment_files = [num_files]
+    else:
       total_diff = sum(key_files_diffs)
       if total_diff == 0:
-        scaled_diffs = [0 for _ in key_files_diffs]
+        segment_files = [0] * len(key_files_diffs)
       else:
-        scaled_diffs = [d * num_files / total_diff for d in key_files_diffs]
-      segment_frames = correct_rounding_errors(num_files, logger, scaled_diffs)
-      assert sum(segment_frames) == num_files, "Rounding correction failed: sum(segment_frames) != num_files"
-    else:
-      segment_frames = [num_files]
+        # Scale each diff to contribute to num_files.
+        segment_files = correct_rounding_errors(logger, num_files,
+                                                [round_up(d * num_files, total_diff) for d in key_files_diffs])
+    sum_segment_files = sum(segment_files)
+    if sum_segment_files != num_files:
+      raise RuntimeError("Rounding correction failed: sum(segment_files) {} != num_files {}"
+                         .format(sum_segment_files, num_files))
 
-    logger.debug("key_files_diffs: {} seg: {}\tsegment_frames: {}, num_files {}"
-                 .format(key_files_diffs, seg, segment_frames, num_files))
-
-    # Update mark with calculated data.
+    logger.debug("key_files_diffs: {} seg: {}\tsegment_files: {}, num_files {}"
+                 .format(key_files_diffs, seg, segment_files, num_files))
     mark.update({
-      "key_files_diffs": key_files_diffs,
       "key_files_offsets": seg,
+      "key_files_diffs": key_files_diffs,
       "num_files": num_files,
-      "segment_frames": segment_frames,
+      "segment_files": segment_files,
     })
 
   # Final consistency check across all marks.
-  total_diffs = sum(sum(m["key_files_diffs"]) for m in group["marks"])
-  if total_diffs != group_num_files:
-    if group["marks"][0]["key_files_diffs"] == [0]:
-      group["marks"][0]["key_files_diffs"] = [1]
-      logger.debug("manually updating mark[0]['key_files_diffs'] from 0 to 1")
-    else:
-      raise RuntimeError("total_diffs {} != group_num_files {}".format(total_diffs, group_num_files))
-  return total_diffs
+  group_num_files = sum(smallest)
+  total_files = sum(m["num_files"] for m in group["marks"])
+  if total_files != group_num_files:
+    raise RuntimeError("total_files {} != group_num_files {}".format(total_files, group_num_files))
+  return total_files
 
 
-def build_mark_segments(group, logger):
-  print_function_entrance(logger, "7;38;5;64")
-  # Build the list of key file offsets for the marks, coping with float rounding errors
-  key_files_indices = get_key_file_offsets_from_replay_stack(group, logger)
-  logger.debug("{} raw key_files_indices".format(key_files_indices))
+def append_group_timings(args, logger):
+  group, file_idx, timestamp, mark, duration, num_frames= args
+  print_function_entrance(logger, "7;38;5;216")
+  if file_idx >= group["num_files"]:
+    raise RuntimeError("file_idx {} for {} group files".format(file_idx, group["num_files"]))
+  new_entry = {
+    "file": group["files"][file_idx],
+    "timestamp": timestamp,
+    "outpoint": round(timestamp + duration, 6),
+    "duration": duration,
+    "num_frames": num_frames,
+    "raw_timestamp": mark["raw_timestamp"],
+    "hold": mark["hold"],
+  }
+  logger.debug(new_entry)
+  return new_entry
 
+
+def handle_file_timing(args, logger):
+  print_function_entrance(logger, "7;38;5;79")
+  mark, group, file_idx, timestamp, _ = args
+  file_idx = mark["key_files_offsets"][0]
+  logger.debug("hold? {} num_files {}".format(mark["hold"], mark["num_files"]))
+  if file_idx >= group["num_files"]:
+    raise RuntimeError("file_idx: {} is outside group num_files: {}".format(file_idx, group["num_files"]))
+  duration = mark["duration"]
+  group["timings"].append(append_group_timings(
+    (group, file_idx, timestamp, mark, mark["duration"], mark["num_frames"]), logger))
+  new_timestamp = round(timestamp + duration, 6)
+  return file_idx, new_timestamp
+
+
+def distribute_frames_evenly(num_files, num_frames, kf_offset_idx):
+  if num_files <= num_frames:
+    file_indices = [i + kf_offset_idx for i in range(num_files)]
+    frames_per_file = [round_up((i + 1) * num_frames, num_files) - round_up(i * num_frames, num_files)
+                       for i in range(num_files)]
+  else:
+    frames_per_file = [1] * num_frames
+    file_indices = [kf_offset_idx]
+    _ = [file_indices.append(file_indices[-1] +
+                             (round_up((i + 1) * num_files, num_frames) - round_up(i * num_files, num_frames)))
+         for i in range(num_frames - 1)]
+  return file_indices, frames_per_file
+
+
+def distribute_files_among_segments(args, logger):
+  print_function_entrance(logger, "7;38;5;77")
+  args = {
+    "idx": args[0],
+    "kf_offset_idx": args[1],
+    "num_files_from": args[2],
+    "num_frames_to": args[3],
+    "total_num_frames": args[4],
+    "timestamp": args[5],
+    "framerate": args[6],
+  }
+  idx = args["idx"]
+  kf_offset_idx = args["kf_offset_idx"]
+  if args["num_frames_to"] == 0:
+    logger.debug("Segment {}: By-passing segment with 0 frames_to".format(idx))
+    timing_diffs = [0]
+    file_indices = [kf_offset_idx]
+    return timing_diffs, file_indices
+  framerate = args["framerate"]
+  running_total = round_up(args["timestamp"] * framerate)
+  last_timestamp = args["timestamp"]
+  if args["num_frames_to"] == 1:
+    logger.debug("Segment {}: Manually setting single frame. kf_offset_idx: {}"
+                 .format(idx, kf_offset_idx))
+    file_indices = [kf_offset_idx]
+    running_total += 1
+    this_timestamp = round(running_total / framerate, 6)
+    timing_diffs = [round(this_timestamp - last_timestamp, 6)]
+    logger.debug("last_timestamp: {:.6f}\tadded frames: {}\trunning_total: {}\t"
+                  "added diff:{:.6f}\tthis_timestamp: {:.6f}"
+                  .format(last_timestamp, 1, running_total, timing_diffs[-1], this_timestamp))
+    return timing_diffs, file_indices
+
+  file_indices, frames_per_file = distribute_frames_evenly(args["num_files_from"], args["num_frames_to"], kf_offset_idx)
+  logger.debug("Segment {}: kf_offset_idx: {}, file_indices {}: {}"
+                .format(idx, kf_offset_idx, len(file_indices), file_indices))
+  logger.debug("Segment {}: num_files_from {} / frames: {} / total_frames {} - frames per file {}"
+               .format(idx, args["num_files_from"], args["num_frames_to"], args["total_num_frames"], frames_per_file))
+  timing_diffs = []
+  for i, frames in enumerate(frames_per_file):
+    running_total += frames
+    this_timestamp = round(running_total / framerate, 6)
+    timing_diffs.append(round(this_timestamp - last_timestamp, 6))
+    logger.debug("{}: last_timestamp: {:.6f}\tadded frames: {}\trunning_total: {}\t"
+                  "added diff:{:.6f}\tthis_timestamp: {:.6f}"
+                  .format(i, last_timestamp, frames, running_total, timing_diffs[-1], this_timestamp))
+    last_timestamp = this_timestamp
+
+  if round_up(sum(timing_diffs) * framerate) != sum(frames_per_file) or not timing_diffs:
+    msg = "About to run into trouble with timestamp calculations"
+    logger.warning(msg)
+    raise RuntimeError(msg)
+  logger.debug("Segment {}: timing_diffs: len {}, sum {:.6f}, diffs: {}"
+              .format(idx, len(timing_diffs), sum(timing_diffs), timing_diffs))
+  return timing_diffs, file_indices
+
+
+def validate_and_update_files(args, logger):
+  print_function_entrance(logger, "7;38;5;78")
+  group, file_indices, mark, timing_diffs, framerate, segment_idx, timestamp = args
+  group_num_files =  group["num_files"]
+
+  expected = round(mark["timestamp"] + mark["duration"], 6)
+  idx = file_indices[-1]
+  for i, idx in enumerate(file_indices):
+    if idx >= group_num_files:
+      raise IndexError("idx {} >= group_num_files {}".format(idx, group_num_files))
+    duration = timing_diffs[i]
+    num_frames = round_up(duration * framerate)
+    logger.debug("Segment {}: Setting idx {} with duration {}" .format(segment_idx, idx, duration))
+    # logger.debug("i: {} out of {}, duration {} / {}".format(i, len(file_indices) - 1, duration, mark["duration"]))
+    group["timings"].append(append_group_timings((group, idx, timestamp, mark, duration, num_frames), logger))
+    timestamp = round(timestamp + duration, 6)
+    logger.debug("Segment {}: Added duration {} to running_timestamp {:.3f}".format(segment_idx, duration, timestamp))
+    if timestamp > expected:
+      logger.debug("Segment {}: running_timestamp {} > timestamp + duration {}"
+                   .format(segment_idx, timestamp, expected))
+      logger.debug("{} - {}"
+                   .format(sum(sum(m["segment_files"]) for m in group["marks"]), group_num_files))
+      raise RuntimeError("Segment {}: Timestamp overflow - this shouldn't happen!".format(segment_idx))
+  logger.debug("Segment {}: Finished validate_and_update_files()".format(segment_idx))
+  return idx, timestamp
+
+
+def handle_segment_distribution(args, logger):
+  print_function_entrance(logger, "7;38;5;80")
+  args = {
+    "mark": args[0],
+    "group": args[1],
+    "file_idx": args[2],
+    "timestamp": args[3],
+    "framerate": args[4],
+  }
+
+  mark = args["mark"]
+  file_idx = args["file_idx"]
+  timestamp = args["timestamp"]
+
+  total_num_frames = mark["num_frames"]
+  key_files_offsets = mark["key_files_offsets"]
+  if total_num_frames == 0:
+    logger.warning("Cannot distribute mark with no frames")
+    return file_idx, timestamp
+  key_files_diffs = mark["key_files_diffs"]
+  sum_key_files_diffs = sum(key_files_diffs)
+
+  logger.debug("total num frames: {}, files distribution {}: {}"
+               .format(total_num_frames, len(key_files_diffs), key_files_diffs))
+  logger.debug("key files offsets: {}, diffs: {}".format(key_files_offsets, key_files_diffs))
+  # Correct any under/over allocations of frames to files
+  frames_slots = correct_rounding_errors(logger, total_num_frames,
+                                         [total_num_frames * files / sum_key_files_diffs for files in key_files_diffs])
+
+  for idx, kf_diff in enumerate(key_files_diffs):
+    if idx == 0:
+      logger.debug("Segment {}: mark details:\n{}".format(idx, mark))
+    timing_diffs, file_indices = distribute_files_among_segments(
+      (idx, key_files_offsets[idx], kf_diff, frames_slots[idx],
+      total_num_frames, timestamp, args["framerate"]), logger)
+
+    file_idx, timestamp = validate_and_update_files(
+      (args["group"], file_indices, mark, timing_diffs, args["framerate"], idx, timestamp), logger)
+    logger.debug("Segment {}: completed. Updated timestamp: {:.3f}".format(idx, timestamp))
+
+  return file_idx, timestamp
+
+
+def validate_timestamp_alignment(running, expected, logger):
+  if running != expected:
+    msg = "running timestamp {:.06f} != expected timestamp {:.06f}".format(running, expected)
+    logger.warning(msg)
+    raise RuntimeError(msg)
+
+
+def build_timings(group, framerate, logger):
+  print_function_entrance(logger, "7;38;5;220", group["label"]["label"])
+  group["timings"] = []
+  redistribute_frames(group, logger)
   files_offsets = distribute_files_among_marks(group, logger)
-  num_marks = len(group["marks"])
-  num_files_offsets = len(files_offsets)
-
-  if num_marks != num_files_offsets: # Pad out the files_offsets when not enough files for num_marks
-    files_offsets += [0] * (num_marks - num_files_offsets)
-
   smallest = prepare_mark_data(group, files_offsets, logger)
-  segment_slices = compute_segment_slices(key_files_indices, files_offsets, group, logger)
-  return update_marks_with_segment_data(group, segment_slices, smallest, logger)
+  segment_slices = compute_segment_slices(group, files_offsets, logger)
+  update_marks_with_segment_data(group, segment_slices, smallest, logger)
+
+  file_idx = 0
+  running_timestamp = group["timestamp_start"]
+  logger.debug("group timestamp_start {:.3f} end {:.3f}"
+               .format(group["timestamp_start"], group["timestamp_end"]))
+
+  for mark in group["marks"]:
+    mark_timestamp = mark["timestamp"]
+    validate_timestamp_alignment(running_timestamp, mark_timestamp, logger)
+    group["timings"].append({"label": mark["raw_line"], "timestamp": mark_timestamp,
+                             "raw_timestamp": mark["raw_timestamp"], "hold": mark["hold"]})
+    logger.debug("\nAdded timings: \t{}\n".format(group["timings"][-1]))
+    single_or_group_fn = handle_file_timing if mark["hold"] or mark["num_files"] <= 1 else handle_segment_distribution
+    file_idx, running_timestamp = single_or_group_fn((mark, group, file_idx, running_timestamp, framerate), logger)
+
+  validate_timestamp_alignment(running_timestamp, group["timestamp_end"], logger)
+
+
+def handle_multiple_same_timestamps(this_timestamp_files, logger):
+  print_function_entrance(logger, "7;38;5;215")
+  num_files = len(this_timestamp_files)
+  donor_idx, donor = this_timestamp_files[0]
+  for i in range(num_files - 1, 0, -1):
+    chosen_one_idx, chosen_one = this_timestamp_files[i]
+    if donor["hold"] and not chosen_one["hold"]:
+      logger.debug("Preventing copying allocation of duration and outpoint "
+        "from label[{}] to label[{}] because it's a hold".format(donor_idx, chosen_one_idx))
+      break
+    if chosen_one["raw_timestamp"] < chosen_one["timestamp"] and not chosen_one["hold"]:
+      logger.debug("Skipping non-hold raw_timestamp before timestamp further away than donor: {}: {}"
+                    .format(chosen_one_idx, chosen_one))
+      break
+    logger.debug("Selected a new best match after timestamp")
+
+    one_frame_duration = round(donor["duration"] / donor["num_frames"], 6)
+    chosen_one["duration"] = one_frame_duration
+    chosen_one["timestamp"] = donor["timestamp"]
+    chosen_one["outpoint"] = donor["timestamp"] = round(donor["timestamp"] + one_frame_duration, 6)
+    donor["duration"] = round(donor["duration"] - one_frame_duration, 6)
+    chosen_one["num_frames"] = 1
+    logger.debug("Updating duration and outpoint by {:.03f} from label[{}] to label[{}]:\n{}"
+                 .format(one_frame_duration, donor_idx, chosen_one_idx, chosen_one))
+    this_timestamp_files.remove((chosen_one_idx, chosen_one))
+    donor["num_frames"] -= 1
+    if donor["num_frames"] <= 1:
+      break
+    logger.debug("Marked chosen_idx {}, on the hunt for more".format(chosen_one_idx))
+  if donor["num_frames"]:
+    logger.debug("Keeping the donor: {}:\n{}".format(donor_idx, donor))
+    this_timestamp_files.remove((donor_idx, donor))
+  return this_timestamp_files
+
+
+def correct_duplicate_mark_timestamps(timings, first_timestamp, logger):
+  print_function_entrance(logger, "7;38;5;210")
+  last_idx = idx = len(timings) - 1
+  while idx >= 0 and timings[idx]["timestamp"] >= first_timestamp:
+    idx -= 1
+  idx += 1
+  if idx >= last_idx:
+    return timings
+  output_timings = timings[:idx]
+  while idx <= last_idx:
+    this_timestamp = timings[idx]["timestamp"]
+    # logger.debug("refreshing this_timestamp: {}".format(this_timestamp))
+    this_timestamp_labels = []
+    while idx <= last_idx and timings[idx]["timestamp"] <= this_timestamp:
+      if this_timestamp != timings[idx]["timestamp"]:
+        raise RuntimeError("timings timestamp order is corrupted")
+      this_timestamp_labels.append((idx, timings[idx]))
+      idx += 1
+    # logger.debug("setting idx to {} with last_idx {}".format(idx, last_idx))
+    this_timestamp_files = sorted(((i, t) for i, t in this_timestamp_labels if "file" in t), key=lambda x: (
+      -x[1]["duration"], x[1]["hold"], x[1]["raw_timestamp"] > x[1]["timestamp"], -x[1]["raw_timestamp"],
+      abs(x[1]["timestamp"] - x[1]["raw_timestamp"])))
+    num_files = len(this_timestamp_files)
+    if num_files:
+      duration = this_timestamp_files[0][1].get("duration", 0)
+      # duration = sum(t["duration"] for _, t in this_timestamp_files[0]["duration"])
+      # logger.debug("this_timestamp {:.06f} has {:.06f} duration with {} files"
+      #              .format(this_timestamp, duration, num_files))
+      # if duration == 0:
+      #   logger.debug("save for next round")
+      if duration != 0 and num_files > 1:
+        for i, t in sorted(handle_multiple_same_timestamps(this_timestamp_files, logger), key=lambda x: -x[0]):
+          logger.debug("Removing label[{}]:\n{}".format(i, t))
+          this_timestamp_labels.remove((i, t))
+    output_timings.extend(t for _, t in this_timestamp_labels)
+  return output_timings
+
+
+def insert_items_into_timings(timings, items, logger):
+  print_function_entrance(logger, "7;38;5;230")
+  first_item = items[0]
+  last_idx = idx = len(timings) - 1
+  while idx >= 0 and timings[idx]["timestamp"] > first_item["raw_timestamp"]:
+    idx -= 1
+  if idx == last_idx:
+    merged = timings + items
+  else:
+    idx += 1
+    merged = timings[:idx]
+    last_timing_ts = timings[idx]["timestamp"]
+    for item in items:
+      while idx <= last_idx and item["timestamp"] > last_timing_ts:
+        merged.append(timings[idx])
+        idx += 1
+        if idx > last_idx:
+          break
+        last_timing_ts = timings[idx]["timestamp"]
+      merged.append(item)
+    merged.extend(timings[idx:])
+  return correct_duplicate_mark_timestamps(merged, first_item["timestamp"], logger)

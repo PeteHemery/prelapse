@@ -4,6 +4,18 @@
 # This file is part of prelapse which is released under the AGPL-3.0 License.
 # See the LICENSE file for full license details.
 
+# You may convey verbatim copies of the Program's source code as you
+# receive it, in any medium, provided that you conspicuously and
+# appropriately publish on each copy an appropriate copyright notice;
+# keep intact all notices stating that this License and any
+# non-permissive terms added in accord with section 7 apply to the code;
+# keep intact all notices of the absence of any warranty; and give all
+# recipients a copy of this License along with the Program.
+
+# prelapse is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
 # common/_init_functions.py
 
 import argparse
@@ -20,12 +32,14 @@ from .._version import __version__
 
 
 __prelapse_banner__ = " " * 19 + """.
- .=,   ,-_  .:.   ;`  .-,   .:.   _.  .:.
- p  : .r   .;_;  :`    _;  ;  :  = ` .;_;
- :  ; :'   :e`   =   ;` ;  ;  ;  `=, :=`
+ p=.   ,-_  .:.   ;`  .-,   .:.   _.  .:.
+ :  : .r   .;_;  :`    _;  ;  :  = ` .;_;
+ ;  ; :'   :e`   =   ;` ;  ;  ;  `=, :=`
 `:<+` ;     '=+` l_, `-a.  :p+` ,s=`  'e+`
  =                         =
-'`    by Pete Hemery      '`{:>12}""".format(__version__)
+'`  (c) Pete Hemery 2025  '`{:>12}
+Released under the AGPL-3.0 License
+https://github.com/PeteHemery/prelapse""".format(__version__)
 
 __all__ = ["prelapse_main", "set_prelapse_epilog", "__version__"]
 
@@ -61,6 +75,13 @@ def _setup_arg_parsing(completion=False):
   common_args = argparse.ArgumentParser(
     formatter_class=argparse.RawTextHelpFormatter,
     add_help=False)
+  common_defaults = {
+    "hide_banner": False,
+    "dry_run": False,
+    "overwrite": False,
+    "verbose": False,
+    "quiet": False
+  }
   common_args.add_argument(
     "--hide_banner", dest="hide_banner", action="store_true",
     help="disable printing prelapse banner\n(default: %(default)s)")
@@ -73,7 +94,10 @@ def _setup_arg_parsing(completion=False):
   common_args.add_argument(
     "-v", "--verbose", dest="verbose", action="store_true",
     help="enable verbose prints\n(default: %(default)s)")
-  common_args.set_defaults(hide_banner=False, dry_run=False, overwrite=False, verbose=False)
+  common_args.add_argument(
+    "-q", "--quiet", dest="quiet", action="store_true",
+    help="disable prints, only show errors\n(default: %(default)s)")
+  common_args.set_defaults(**common_defaults)
 
   parser = argparse.ArgumentParser(
     description="Script for creating image sequence based music videos.\n"
@@ -93,7 +117,7 @@ def _setup_arg_parsing(completion=False):
     "labels file to indicate the timestamp that a group should start.\n"
     "Explore the sub commands with -h for more details on options available.",
     formatter_class=argparse.RawTextHelpFormatter, parents=[common_args])
-  spgen.set_defaults(cmd = "gen")
+  spgen.set_defaults(cmd = "gen", **common_defaults)
   spgen = LapseGenerator.add_parser_args(spgen)
 
   spmod = subparsers.add_parser(
@@ -108,7 +132,7 @@ def _setup_arg_parsing(completion=False):
     " --lengthen to change timestamp columns from 1 to 2\n"
     "Explore the sub commands with -h for more details on options available.",
     formatter_class=argparse.RawTextHelpFormatter, parents=[common_args])
-  spmod.set_defaults(cmd = "mod")
+  spmod.set_defaults(cmd = "mod", **common_defaults)
   spmod, spmod_subparsers = LapseModifier.add_parser_args(spmod, common_args, completion)
 
   sprun = subparsers.add_parser(
@@ -116,7 +140,7 @@ def _setup_arg_parsing(completion=False):
     description="Preview output with ffplay command.\n"
     "Explore the sub commands with -h for more details on options available.",
     formatter_class=argparse.RawTextHelpFormatter, parents=[common_args])
-  sprun.set_defaults(cmd = "play")
+  sprun.set_defaults(cmd = "play", **common_defaults)
   sprun = LapseRunner.add_parser_args(sprun, run=True)
 
   spout = subparsers.add_parser(
@@ -124,7 +148,7 @@ def _setup_arg_parsing(completion=False):
     description="Create encoded mp4 output with ffmpeg command.\n"
     "Explore the sub commands with -h for more details on options available.",
     formatter_class=argparse.RawTextHelpFormatter, parents=[common_args])
-  spout.set_defaults(cmd = "enc")
+  spout.set_defaults(cmd = "enc", **common_defaults)
   spout = LapseRunner.add_parser_args(spout, out=True)
 
   spinfo = subparsers.add_parser(
@@ -135,10 +159,10 @@ def _setup_arg_parsing(completion=False):
     "Or show the details for a particular image file name.\n"
     "Explore the sub commands with -h for more details on options available.",
     formatter_class=argparse.RawTextHelpFormatter, parents=[common_args])
-  spinfo.set_defaults(cmd = "info")
+  spinfo.set_defaults(cmd = "info", **common_defaults)
   spinfo = LapseInfo.add_parser_args(spinfo)
 
-  parser.set_defaults(verbose=False)
+  parser.set_defaults(**common_defaults)
 
   set_prelapse_epilog(parser)
   return [subparsers,] + spmod_subparsers if completion else parser
@@ -361,11 +385,11 @@ def prelapse_main(args=None):
     _handle_parsed_args(parser, args)
   except Exception as e: # pylint: disable=broad-exception-caught
     if args.verbose:
-      print(__prelapse_banner__)
       raise
     exit_code = 1
     print("Run with '-v' to see back trace.\n{}: {}".format(type(e).__name__, e))
-  if not args.hide_banner:
-    print(__prelapse_banner__)
-  if exit_code:
-    sys.exit(exit_code)
+  finally:
+    if not (args.hide_banner or args.quiet):
+      print(__prelapse_banner__)
+    if exit_code:
+      sys.exit(exit_code)

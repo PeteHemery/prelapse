@@ -4,11 +4,22 @@
 # This file is part of prelapse which is released under the AGPL-3.0 License.
 # See the LICENSE file for full license details.
 
+# You may convey verbatim copies of the Program's source code as you
+# receive it, in any medium, provided that you conspicuously and
+# appropriately publish on each copy an appropriate copyright notice;
+# keep intact all notices stating that this License and any
+# non-permissive terms added in accord with section 7 apply to the code;
+# keep intact all notices of the absence of any warranty; and give all
+# recipients a copy of this License along with the Program.
+
+# prelapse is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
 # runner/label_processor.py
 
-from ..common import format_float
-from .parser_utils import print_function_entrance
-from .timing_builder import build_timings, build_mark_segments
+from ..common import format_float, print_function_entrance, round_up
+from .timing_builder import build_timings, insert_items_into_timings
 
 
 def parse_index(index, first_label):
@@ -43,24 +54,20 @@ def parse_index_and_slice(label, first_label):
     raise RuntimeError(
       "Cannot parse invalid index/slice label:\n{}"
       .format(label["raw_line"]))
-  # We have an index or a slice
   first_label, index = indexed
   sliced = index.split(":")  # Search for the slice char
-  if len(sliced) > 2:
+  num_slices = len(sliced)
+  if num_slices > 2:
     raise RuntimeError(
       "Only one ':' allowed when defining group slice. Invalid label:\n{}"
       .format(label["raw_line"]))
-  if len(sliced) == 1:   # We have an index
-    index = parse_index(index, first_label)
-    start_idx, end_idx = index, index+1 if index > 0 else None
-    label["index"] = index
-  elif len(sliced) == 2: # We have a slice
-    slice_values = parse_slice(sliced, first_label)
-    label["slice"] = slice_values
-    start_idx, end_idx = slice_values
+  if num_slices == 1:   # We have an index
+    label["index"] = parse_index(index, first_label)
+  elif num_slices == 2: # We have a slice
+    label["slice"] = parse_slice(sliced, first_label)
   else:
-    raise RuntimeError("Impossible slice count")
-  return first_label, start_idx, end_idx
+    raise RuntimeError("Impossible slice count: {}".format(num_slices))
+  return first_label
 
 
 def parse_rep(label, ins):
@@ -87,13 +94,19 @@ def parse_tempo(label, ins):
 
 def populate_group_files_from_instructions(label, group_config):
   lookup_table = {
-    "rev": lambda files, val: files[::-1],
+    "rev": lambda files, _: files[::-1],
     "rep": lambda files, val: files + (val - 1) * files[int(files[0] == files[-1]):],
-    "boom": lambda files, val: files + files[-2::-1],
-    "tempo": lambda files, val: files,
-    "hold": lambda files, val: files,
+    "boom": lambda files, _: files + files[-2::-1],
+    "tempo": lambda files, _: files,
+    "hold": lambda files, _: files,
   }
-  files = group_config.items[label["files_start_idx"] : label["files_end_idx"]]
+  if "index" in label:
+    files = [group_config.items[label["index"]]]
+  elif "slice" in label:
+    slice_from, slice_to = label["slice"]
+    files = group_config.items[slice_from:slice_to]
+  else:
+    files = group_config.items[:]
   if 0 == len(files):
     raise RuntimeError("Number of files in group name {} is 0.\n".format(group_config))
 
@@ -127,12 +140,14 @@ def add_first_label_to_marks(label):
 
 
 def build_group_entry(label, group_config):
+  files = populate_group_files_from_instructions(label, group_config)
   group = {
     "label": label,
-    "files": populate_group_files_from_instructions(label, group_config),
+    "files": files,
+    "num_files": len(files),
     "group_config": group_config,
     "marks": [add_first_label_to_marks(label)],
-    "timestamp_start": float(label["timestamp"]),
+    "timestamp_start": label["timestamp"],
     "holds": len([i for i in label["group_instructions"] if "hold" in i]),
   }
   if "replay_stack" in label:
@@ -143,7 +158,8 @@ def build_group_entry(label, group_config):
 
 def build_mark_entry(label, hold_present, tempo=None):
   mark = {
-    "timestamp": float(label["timestamp"]),
+    "timestamp": label["timestamp"],
+    "raw_timestamp": label["raw_timestamp"],
     "hold": hold_present,
     "raw_line": label["raw_line"],
   }
@@ -192,18 +208,11 @@ def decode_group_instruction(label, instructions):
   if not any("tempo" in i.keys() for i in group_instructions):
     group_instructions.append({"tempo": 1.0})
 
-
   # Parse "group_name[index/slice]"
   first_label = instructions[0]
   if "[" in first_label:
-    first_label, start_idx, end_idx = parse_index_and_slice(label, first_label)
-  else:
-    start_idx, end_idx = None, None
-  label.update({
-    "group_instructions": group_instructions,
-    "files_start_idx": start_idx,
-    "files_end_idx": end_idx,
-  })
+    first_label = parse_index_and_slice(label, first_label)
+  label.update({"group_instructions": group_instructions})
   return first_label
 
 
@@ -223,14 +232,15 @@ def parse_label_line(line):
   return timestamp, entry[-1].strip()
 
 
-def update_prev_mark_duration(mark, timestamp, framerate):
+def update_prev_mark_duration(mark, timestamp, raw_timestamp, framerate):
   duration = round(timestamp - mark["timestamp"], 6)
-  num_frames = round(duration * framerate)
+  raw_duration = round(raw_timestamp - mark["raw_timestamp"], 6)
+  num_frames = round_up(duration * framerate)
   mark.update({
     "duration": duration,
+    "raw_duration": raw_duration,
     "num_frames": num_frames,
-    "num_files": 1 if mark["hold"] else 0, # To be decided later
-    "play_num_frames": 1 if mark["hold"] else num_frames,
+    "num_files": 0, # To be decided later
   })
 
 
@@ -238,13 +248,18 @@ def update_group_mark_info(group, mark, framerate):
   last_mark = group["marks"][-1]
   if "tempo" not in mark:
     mark["tempo"] = last_mark["tempo"]
-  update_prev_mark_duration(last_mark, mark["timestamp"], framerate)
+  update_prev_mark_duration(last_mark, mark["timestamp"], mark["raw_timestamp"], framerate)
   if mark["hold"]:
     group["holds"] += 1
   group["marks"].append(mark)
 
 
-def decode_groups_and_marks(label, delimiter, groups, config, framerate):
+def decode_groups_and_marks(groups, args):
+  label = args["label"]
+  delimiter = args["delimiter"]
+  config = args["config"]
+  framerate = args["framerate"]
+
   instructions = [item.strip() for item in label["label"].split(delimiter)]
   first_label = instructions[0]
   if any(first_label.lower().startswith(l) for l in ["tempo", "hold", "mark"]):
@@ -260,190 +275,170 @@ def decode_groups_and_marks(label, delimiter, groups, config, framerate):
   if first_label not in config:
     raise RuntimeError(
       "Label must start with a group name, 'tempo', 'hold', 'mark' or 'end'.\n"
-      "Invalid label: '{}'"
-      .format(label["raw_line"]))
+      "Invalid label: '{}'".format(label["raw_line"]))
   group = build_group_entry(label, config[config.index(first_label)])
   group["group_idx"] = len(groups)
   return group
 
 
-def timestamp_checks(timestamp, last_timestamp, label, prev_label):
-  if timestamp > 0.0 and timestamp == last_timestamp:
-    raise RuntimeError(
-      "Difference of 0 calculated. Duplicated mark for same timestamp?\n{}\n{}"
-      .format(label, prev_label))
+def timestamp_checks(timestamp, last_timestamp, framerate, label_info, logger):
+  if timestamp == last_timestamp:
+    logger.warning(
+      "Difference of 0 calculated for timestamp {} at {:.03f} fps ({:.03f}s).\n"
+      "Duplicated mark for same timestamp due to framerate calculation? \n{}"
+      .format(timestamp, framerate, round(1 / framerate, 6), label_info))
   if timestamp < last_timestamp:
     raise RuntimeError(
-      "Negative timestamp calculated. Are timestamps out of order?\n{}\n{}"
-      .format(prev_label, label))
+      "Negative timestamp calculated. Are timestamps out of order?\n{}"
+      .format(label_info))
 
 
 def group_timing_error_checks(group, logger):
   print_function_entrance(logger, "7;38;5;184")
-  num_files = len(group["files"])
+  num_files = group["num_files"]
   num_holds = group["holds"]
   num_marks = len(group["marks"])
 
   if num_marks == num_holds:
-    # raise RuntimeError(
-    logger.warning(
-      "Group with all holds? OK.. {}"
-      .format(group["group_config"]))
+    logger.debug("Group with all holds '{}'".format(group["group_config"]))
     if num_holds > num_files:
-      raise RuntimeError(
-        "More holds than files in group:\n{}\nNum holds: {}\tNum files: {}"
+      logger.warning(
+        "More holds than files in group:\n{}Num holds: {}\tNum files: {}"
         .format(group["marks"][0]["raw_line"], num_holds, num_files))
   elif (num_files - num_holds) / (num_marks - num_holds) < 1 or num_files / num_marks < 1:
     logger.warning(
-      "Number of files ({}) is less than the number of marks ({}) in group:\n{}\n" \
+      "Number of files ({}) is less than the number of marks ({}) in group:\n{}" \
       .format(num_files, num_marks, group["marks"][0]["raw_line"]))
 
-  total_num_frames = sum(mark["play_num_frames"] for mark in group["marks"])
+  total_num_frames = sum(1 if mark["hold"] and mark["num_frames"] else mark["num_frames"] for mark in group["marks"])
   if num_files > total_num_frames:
+    holds = " (including {} hold{})".format(num_holds, "s" if num_holds > 1 else "") if num_holds else ""
     logger.warning(
       "Number of files ({}) is more than the number of frames available ({}){}."
-      " Reducing number of files to fit into frames:\n{}\n"
-      .format(
-        num_files, total_num_frames,
-        " (including {} holds)".format(group["holds"]) if group["holds"] else "",
-        group["marks"][0]["raw_line"]))
+      " Reducing number of files to fit into frames:\n{}"
+      .format(num_files, total_num_frames, holds, group["marks"][0]["raw_line"]))
 
 
-def finalize_group(group, timestamp, framerate, logger):
+def finalize_group(group, args, logger):
   print_function_entrance(logger, "7;38;5;22", group["label"]["label"])
-  duration = timestamp - float(group["timestamp_start"])
-  update_prev_mark_duration(group["marks"][-1], timestamp, framerate)
+  timestamp = args["label"]["timestamp"]
+  raw_timestamp = args["label"]["raw_timestamp"]
+  framerate = args["framerate"]
+  duration = round(timestamp - group["timestamp_start"], 6)
+  update_prev_mark_duration(group["marks"][-1], timestamp, raw_timestamp, framerate)
   group.update({
     "timestamp_end": timestamp,
+    "raw_timestamp_end": raw_timestamp,
     "duration": duration,
-    "num_frames": round(duration * framerate),
+    "num_frames": round_up(duration * framerate),
   })
   group_timing_error_checks(group, logger)
-  total_diffs = build_mark_segments(group, logger)
-  num_files = len(group["files"])
-  if total_diffs != num_files:
-    raise RuntimeError("total_diffs {} != num_files {}".format(total_diffs, num_files))
-
   build_timings(group, framerate, logger)
-
   return group["timings"]
 
 
-def handle_jump_timing(timings, jump):
-  max_timestamp = float([t for t in timings[::-1] if "outpoint" in t][0]["outpoint"])
-  if jump < 0.0 or jump >= max_timestamp:
-    raise RuntimeError(
-      "{} jump point is invalid. Must be between 0.0 and {}"
-      .format(jump, max_timestamp))
-
-  # Keep track of the last/next valid index while going backwards through timings
-  idx = 0
-  for i, entry in enumerate(timings[::-1]):
-    if "inpoint" in entry:
-      for x in ["inpoint", "outpoint"]:
-        entry[x] = "{:.6f}".format(float(entry[x]) - jump)
-      if float(entry["inpoint"]) < 0:
-        if float(entry["outpoint"]) > 0:
-          idx = len(timings) - 1 - i
-        first_entry = timings[idx]
-        if float(first_entry["inpoint"]) != 0:
-          first_entry["duration"] = float(first_entry["outpoint"])
-          first_entry["inpoint"] = "{:.6f}".format(0)
-        return timings[idx:]
-      idx = len(timings) - 1 - i
-  return None
-
-
-def insert_items_into_timings(timings, items):
-  # Sort both lists first by timestamp.
-  timings_sorted = sorted(timings, key=lambda x: x["timestamp"])
-  items_sorted = sorted(items, key=lambda x: x["timestamp"])
-
-  merged = []
-  i, j = 0, 0
-  while i < len(timings_sorted) and j < len(items_sorted):
-    if timings_sorted[i]["timestamp"] <= items_sorted[j]["timestamp"]:
-      merged.append(timings_sorted[i])
-      i += 1
-    else:
-      merged.append(items_sorted[j])
-      j += 1
-
-  if i < len(timings_sorted):
-    merged.extend(timings_sorted[i:])
-  if j < len(items_sorted):
-    merged.extend(items_sorted[j:])
-
-  return merged
-
-
 def get_last_non_comment_label(labels):
-  return next((l for l in labels[::-1] if "comment_only" not in l), None)
+  idx = len(labels) - 1
+  while idx >= 0 and "comment_only" in labels[idx]:
+    idx -= 1
+  if idx == -1:
+    return None, None
+  return idx, labels[idx]
 
 
 def handle_comment(label, label_text):
   comment_split = label_text.split("#")
-  label.update(
-    {"comment_only": True} if comment_split[0] == "" else
-    {"comment": "#".join(comment_split[1:]).lstrip(),
-      "label": comment_split[0].rstrip()}
-  )
+  if comment_split[0] == "":
+    label.update({"comment_only": True})
+  else:
+    label.update({"comment": "#".join(comment_split[1:]).lstrip(), "label": comment_split[0].rstrip()})
 
 
-def process_labels(args, logger): # pylint: disable=too-many-locals
-  content, framerate, config, delimiter, jump = args
+def handle_group_label(timings, groups, args, logger):
+  group = decode_groups_and_marks(groups, args)
+  if group:
+    if groups: # Now all marks are in place, calculate the timestamps.
+      timings = insert_items_into_timings(timings, finalize_group(groups[-1], args, logger), logger)
+    groups.append(group)
+  return timings, groups
+
+
+def handle_jump_timing(timings, jump, framerate):
+  max_timestamp = round(round_up(timings[-1]["raw_timestamp"] * framerate) / framerate, 6)
+  if not 0.0 < jump < max_timestamp:
+    raise RuntimeError("{} jump point is invalid. Must be between 0.0 and {}".format(jump, max_timestamp))
+
+  last_valid_idx = len(timings) - 1
+  for rev_idx, entry in enumerate(reversed(timings)):
+    idx = last_valid_idx - rev_idx
+    if "outpoint" not in entry:
+      continue
+    for x in ["timestamp", "outpoint"]:
+      entry[x] = round(round_up((entry[x] - jump) * framerate) / framerate, 6)
+    if entry["timestamp"] <= 0:
+      entry["timestamp"] = 0
+      entry["duration"] = entry["outpoint"]
+      return timings[idx:]
+
+  raise RuntimeError("handle_jump_timing never returned")
+
+
+def process_labels(args, logger):
+  args = {
+    "content": args[0],
+    "framerate": args[1],
+    "config": args[2],
+    "delimiter": args[3],
+    "jump": args[4],
+  }
   labels = []
   groups = []
   timings = []
-  last_timestamp = 0.0
-  for line in content:
-    line = line.rstrip()
-    if line == "" or line.startswith("#"): # Ignore commented and blank lines
+  last_timestamp = -1
+  for i, line in enumerate(args["content"]):
+    if line.strip() == "" or line.strip().startswith("#"): # Ignore commented and blank lines
       continue
-    timestamp, label_text = parse_label_line(line)
-    # Align the timestamp with the framerate by rounding up
-    timestamp = int((timestamp * framerate) + 0.5) / framerate
+    raw_timestamp, label_text = parse_label_line(line)
+    # Align the timestamp with the framerate, always before the mark
+    timestamp = round(int(raw_timestamp * args["framerate"]) / args["framerate"], 6)
     label = {
       "label": label_text,
-      "timestamp": "{}".format(format_float(timestamp)),
-      "raw_line": line,
+      "timestamp": timestamp,
+      "raw_timestamp": round(raw_timestamp, 6),
+      "raw_line": line.rstrip(),
     }
+    args.update({"label": label})
     # Ignore comment at the start of the label, but save comments within valid labels
     if "#" in label_text:
       handle_comment(label, label_text)
-    last_non_comment_label = get_last_non_comment_label(labels)
-    if last_non_comment_label:
-      timestamp_checks(timestamp, last_timestamp, label["raw_line"],
-                       last_non_comment_label["raw_line"])
-    # Don't add comments to the running timestamp calculations
-    if timestamp > 0.0:
-      last_non_comment_label["duration"] = round(timestamp - last_timestamp, 6)
+    lncl_idx, last_non_comment_label = get_last_non_comment_label(labels)
+    if last_non_comment_label and "comment_only" not in label:
+      label_info = "Line number: 'label'\n{}: '{}'\n{}: '{}'".format(
+        lncl_idx + 1, last_non_comment_label["raw_line"], i + 1, label["raw_line"])
+      timestamp_checks(timestamp, last_timestamp, args["framerate"], label_info, logger)
+      if timestamp > 0:
+        last_non_comment_label["duration"] = round(timestamp - last_timestamp, 6)
+    if "comment_only" not in label:
+      # Don't add comments to the running timestamp calculations
       last_timestamp = timestamp
     if "end" == label_text:
       label["end"] = True
-      timings = insert_items_into_timings(timings,
-                                          finalize_group(groups[-1], timestamp, framerate, logger))
-      timings.append({"label": label["raw_line"], "timestamp": timestamp})
+      timings = insert_items_into_timings(timings, finalize_group(groups[-1], args, logger), logger)
+      timings.append({"label": label["raw_line"], "timestamp": timestamp, "raw_timestamp": raw_timestamp})
     elif "comment_only" in label:
-      timings = insert_items_into_timings(timings,
-                                          [{"label": label["raw_line"], "timestamp": timestamp}])
+      timings = insert_items_into_timings(timings, [{"label": label["raw_line"], "timestamp": timestamp,
+                                                     "raw_timestamp": raw_timestamp}], logger)
     else:
-      group = decode_groups_and_marks(label, delimiter, groups, config, framerate)
-      if group:
-        if groups: # Now all marks are in place, calculate the timestamps.
-          timings = insert_items_into_timings(timings,
-                                              finalize_group(groups[-1], timestamp, framerate, logger))
-        groups.append(group)
+      timings, groups = handle_group_label(timings, groups, args, logger)
 
     labels.append(label)
-  last_non_comment_label = get_last_non_comment_label(labels)
+  _, last_non_comment_label = get_last_non_comment_label(labels)
   if "end" not in last_non_comment_label:
-    raise RuntimeError(
-      "The last label must be 'end'\n{}".format(last_non_comment_label["raw_line"]))
+    raise RuntimeError("The last label must be 'end'\n{}".format(last_non_comment_label["raw_line"]))
 
-  if jump != 0.0:
-    timings = handle_jump_timing(timings, jump)
-    assert timings
+  if args["jump"] > 0:
+    timings = handle_jump_timing(timings, args["jump"], args["framerate"])
 
-  return [["# {}".format(t["label"]) if "label" in t else t["file"],
-           "{}".format(format_float(t.get("duration", 0)))] for t in timings]
+  return ([["# {}".format(t["label"]) if "label" in t else t["file"],
+           "{}".format(format_float(t.get("duration", 0)))] for t in timings],
+          last_non_comment_label["timestamp"])

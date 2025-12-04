@@ -1,7 +1,9 @@
-# prelapse - Pete's Reasonably Educational Lapse Animation Python Script Experiment
+# prelapse - Pete's Reasonably Educational Lapse Animation Python Software Experiment
 
 ## Text File Based Image Sequence Music Video Generator
 🖳 🎶 ⏆ 🏷️ 🖹 🤳 🏞️ 🌇 🌃 🖹 ⏩ ⏳ 🎞 📽️ 🤓
+
+Add tags labels to audio timestamps, group pictures together in markdown format into a file, run the script, and out pops a music video!
 
 -----
 
@@ -22,6 +24,8 @@ It is essentially a wrapper that formats groups of images into `ffconcat` file f
 
 Groups of images are define in a custom markdown format. Using Audacity to position specific `prelapse syntax` comments at timestamps, it's possible to define which groups start at what time, and specify different effects within the duration of a group.
 
+It also has a lot of cababilities for using `ffmpeg` and `ImageMagick` for preparing images.
+
 Explanations/tutorials are below/to come.
 </details>
 
@@ -38,7 +42,7 @@ Since its goal is to create *lapse type videos, using the script involves some p
 
 **_Think hard and build things_** over **_Move fast and break things_**
 
-This "non-linear text based video editor" was created because of the time consuming frustration experienced when manually stitching together image sequences ***and then*** trying to sync to audio, causing dropped or duplicated frames.
+This "_non-linear text based video editor_" was created because of the time consuming frustration experienced when manually stitching together image sequences ***and then*** trying to sync to audio, causing dropped or duplicated frames.
 
 I've been a user of Free and Open Source Software (FOSS) for many years, and am a great believer in its principles. I'm a professional software developer, with a passion project, and have had the privilege of some time to put into making this software, and would feel satisfaction if others get to use it to fuel their creativity and passions.
 </details>
@@ -519,10 +523,12 @@ Thanks for using `prelapse`! Go and be creative! Share what you learn!
 While this software is released under an Open Source License and is free to use for
 any purpose, including commercial applications, a kind reminder that
 the copyright holder, license and a copy of the source code MUST be included
-when using or distributing this software. A kind request that
+when using or distributing this (or derivations of this) software. A kind request that
 businesses or individuals generating significant revenue through the use of
 this library, or find enough value in it to be worthy of donating a nice coffee or beer,
 consider supporting its continued development and maintenance.
+
+https://github.com/sponsors/PeteHemery
 
 -----
 

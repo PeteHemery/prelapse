@@ -4,17 +4,35 @@
 # This file is part of prelapse which is released under the AGPL-3.0 License.
 # See the LICENSE file for full license details.
 
+# You may convey verbatim copies of the Program's source code as you
+# receive it, in any medium, provided that you conspicuously and
+# appropriately publish on each copy an appropriate copyright notice;
+# keep intact all notices stating that this License and any
+# non-permissive terms added in accord with section 7 apply to the code;
+# keep intact all notices of the absence of any warranty; and give all
+# recipients a copy of this License along with the Program.
+
+# prelapse is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
 # common/utility_functions.py
 
 from __future__ import print_function, division
 
+import ctypes
 import datetime
 import logging
 import os
 import re
 import subprocess
+import sys
 
 from .._version import __version__
+
+
+def round_up(n, m=1):
+  return int((n / m) + 0.5)
 
 
 def shell_safe_path(path):
@@ -29,10 +47,42 @@ def format_float(num, precision=6):
   return re.sub(r"(\.\d*?[1-9])0+$|\.0+$", r"\1", "{{:.{}f}}".format(precision).format(float(num)))
 
 
-def setup_logger(component, verbose=False):
+def setup_logger(component, verbose=False, quiet=False):
   """Setup logger with the given name."""
-  logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
+  level = logging.INFO
+  if verbose:
+    level = logging.DEBUG
+  if quiet:
+    level = logging.ERROR
+  logging.basicConfig(level=level)
   return logging.getLogger(component)
+
+
+def supports_ansi(stream=sys.stdout):
+  # Must be a real terminal
+  if not hasattr(stream, "isatty") or not stream.isatty():
+    return False
+
+  # On POSIX, a non-dumb TERM usually means ANSI is OK
+  if os.name == "posix":
+    return bool(os.environ.get("TERM", "") != "dumb")
+
+  # On Windows, check the console mode for the ENABLE_VIRTUAL_TERMINAL_PROCESSING bit
+  if os.name == "nt":
+    kernel32 = ctypes.windll.kernel32
+    h = kernel32.GetStdHandle(-11) # STD_OUTPUT_HANDLE = -11
+    mode = ctypes.c_uint()
+    if not kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+      return False
+    return (mode.value & 0x0004) != 0 # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+
+  return False
+
+
+def print_function_entrance(logger, ansi, text="", prefix="    "):
+  caller = sys._getframe(1).f_code.co_name # pylint: disable=protected-access
+  to_print = "IN {}({})".format(caller, text)
+  logger.debug(prefix + "\x1b[{}m{}\x1b[0m".format(ansi, to_print) if supports_ansi() else to_print)
 
 
 def parse_group_slice_index(group):
@@ -40,8 +90,10 @@ def parse_group_slice_index(group):
   slice_index = None
   if any(x in group for x in [":", "[", "]"]):
     tmp = group.split("[")
-    assert len(tmp) == 2
-    assert tmp[1][-1] == "]"
+    if len(tmp) != 2:
+      raise RuntimeError("Unexpected number of opening brackets in group: {}".format(group))
+    if tmp[1][-1] != "]":
+      raise RuntimeError("Last character is not closing bracket in group: {}".format(group))
     first_label = tmp[0]
     tmp = tmp[1][:-1].split(":")
     num_splits = len(tmp)
@@ -69,7 +121,7 @@ def parse_group_slice_index(group):
         raise RuntimeError("Cannot parse invalid slice label, must provide start and stop values: {}".format(group))
       slice_index = (start, stop)
     else:
-      raise RuntimeError("How did you get here?")
+      raise RuntimeError("How did you get here? {}".format(group))
     group = first_label
   return group, index, slice_index
 
@@ -80,7 +132,7 @@ def group_append(self, group, index=None, slice_index=None):
   thisgroup = {"name": group.group, "groupindex": groupindex}
   thisgroup["grouptype"] = "config"
   thisgroup["files"] = list(enumerate(self.config[groupindex].items))
-  thisgroup["numfiles"] = len(thisgroup["files"])
+  thisgroup["num_files"] = len(thisgroup["files"])
   try:
     thisgroup["path"] = os.path.dirname(self.config[groupindex].items[0])
   except IndexError:
@@ -91,18 +143,18 @@ def group_append(self, group, index=None, slice_index=None):
       thisgroup["files"] = [thisgroup["files"][index],]
     except IndexError:
       self.logger.warning("Index {} not within range of group '{}': [0:{}]"
-                          .format(index, thisgroup["name"], thisgroup["numfiles"] - 1))
+                          .format(index, thisgroup["name"], thisgroup["num_files"] - 1))
       thisgroup["files"] = []
     thisgroup["grouptype"] = "index_{}".format(index)
-    thisgroup["numfiles"] = len(thisgroup["files"])
+    thisgroup["num_files"] = len(thisgroup["files"])
   elif slice_index is not None:
     thisgroup["files"] = thisgroup["files"][slice_index[0]:slice_index[1]]
     if len(thisgroup["files"]) == 0:
       self.logger.warning("Slices {} not within range of group '{}' [0:{}]"
-                          .format(slice_index, thisgroup["name"], thisgroup["numfiles"] - 1))
+                          .format(slice_index, thisgroup["name"], thisgroup["num_files"] - 1))
 
     thisgroup["grouptype"] = "slice_{}_{}".format(*slice_index)
-    thisgroup["numfiles"] = len(thisgroup["files"])
+    thisgroup["num_files"] = len(thisgroup["files"])
   self.groups.append(thisgroup)
 
 
@@ -127,13 +179,13 @@ def parse_group_args(self, args):
 
 def gen_list_file(files, fps, jump):
   output = "ffconcat version 1.0\n\n"
-  output += "stream\nexact_stream_id 0\n"
+  # output += "stream\nexact_stream_id 0\n"
   inpoint = 0.0
   for file_time in files:
     if file_time[0][:2] == "# ":
       output += "{}\n".format(file_time[0])
       continue
-    output += "# {:0.6f}\t{}\n".format(inpoint+jump, file_time[0])
+    output += "# {:0.6f}\n".format(inpoint+jump)
     image = file_time[0].replace("'", "'\\''") # Cope with single quotes in filenames
     output += "file 'file:{}'\n".format(image)
     output += "duration {}\n".format(file_time[1])
@@ -144,18 +196,18 @@ def gen_list_file(files, fps, jump):
   return output
 
 
-def write_list_file(outpath, output, dry_run, fd=None):
+def write_list_file(outpath, output, dry_run, fd=None, quiet=False):
   if dry_run:
     print("Dry Run. Generated output:\n\n{}\n".format(output))
   else:
     # Write the output file or temp file descriptor
     with os.fdopen(fd, "wb") if fd is not None else open(outpath, "wb") as f:
       f.write(output.encode("utf-8"))
-    print("Written{} '{}'".format(" to fd {}".format(fd) if fd else "", outpath))
+    if not quiet:
+      print("Written{} '{}'".format(" to fd {}".format(fd) if fd else "", outpath))
 
 
-def backup_prelapse_file(file_path, overwrite=False):
-  # from pdb import set_trace;set_trace()
+def backup_prelapse_file(file_path):
   print("WARNING: prelapse file already exists:\n'{}'".format(file_path))
   print("Use '-y' to overwrite without being prompted to backup.", end="")
   print(" (Press Ctrl+C to avoid modifying any more files)")
@@ -220,7 +272,7 @@ def build_output_ff_cmd(out_args):
     cmd += " -level:v 4.2"
     cmd += " -pix_fmt yuv420p"
     cmd += " -x264-params keyint=72:min-keyint=72:scenecut=0"
-    cmd += " -movflags +faststart+frag_keyframe+empty_moov+default_base_moof"
+    cmd += " -movflags +faststart"
   elif codec == "libx265":
     cmd += " -c:v {}".format(codec)
     cmd += " -x265-params b-pyramid=0:scenecut=0:crf={}".format(crf)
@@ -231,7 +283,7 @@ def build_output_ff_cmd(out_args):
     cmd += " -pix_fmt yuv420p"
     cmd += " -b:v 1275k"
     cmd += " -x264-params keyint=72:min-keyint=72:scenecut=0"
-    cmd += " -movflags +faststart+frag_keyframe+empty_moov+default_base_moof"
+    cmd += " -movflags +faststart"
   else:
     raise RuntimeError("Invalid codec selection: {}".format(codec))
 
@@ -242,10 +294,10 @@ def build_output_ff_cmd(out_args):
     cmd += " -y"
 
   runcmd = cmd.split()
-  runcmd += ["-metadata:s:v:0", "encoder='{}'".format("prelapse {} by Pete Hemery".format(__version__))]
+  date_now = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
   runcmd += ["-metadata", "comment='{}'".format("Created with prelapse {}".format(__version__))]
   runcmd += ["-metadata", "title='{}'".format(".".join(os.path.basename(outpath).split(".")[:-1]))]
-  runcmd += ["-metadata", "date='{}'".format(datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"))]
+  runcmd += ["-metadata", "date='{}'".format(date_now)]
 
   return runcmd
 

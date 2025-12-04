@@ -4,6 +4,18 @@
 # This file is part of prelapse which is released under the AGPL-3.0 License.
 # See the LICENSE file for full license details.
 
+# You may convey verbatim copies of the Program's source code as you
+# receive it, in any medium, provided that you conspicuously and
+# appropriately publish on each copy an appropriate copyright notice;
+# keep intact all notices stating that this License and any
+# non-permissive terms added in accord with section 7 apply to the code;
+# keep intact all notices of the absence of any warranty; and give all
+# recipients a copy of this License along with the Program.
+
+# prelapse is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
 # modifier/image_modifier.py
 
 from __future__ import print_function, division
@@ -218,7 +230,7 @@ def run_mogrify_cmd(self, args):
       self.logger.warning("Dry run: Not running command:\n '{}' \nNot writing new group '{}' to config {}"
                 .format(" ".join(cmd), group_name, self.configfile))
     else:
-      shell_ret = call_shell_command(cmd)
+      shell_ret = call_shell_command(cmd, quiet=self.quiet)
       if shell_ret:
         print("Shell command failed with return code: {}".format(shell_ret))
         return
@@ -248,7 +260,7 @@ def run_image_stab(self, args):
 
 def handle_list_file(self, files, fps, list_file):
   list_file_content = gen_list_file([[f[1], 1.0 / fps] for f in files], fps, 0)
-  write_list_file(list_file, list_file_content, self.dry_run)
+  write_list_file(list_file, list_file_content, self.dry_run, quiet=self.quiet)
   self.logger.info("Written list file: {}".format(list_file))
 
 

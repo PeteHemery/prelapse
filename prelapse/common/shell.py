@@ -4,6 +4,18 @@
 # This file is part of prelapse which is released under the AGPL-3.0 License.
 # See the LICENSE file for full license details.
 
+# You may convey verbatim copies of the Program's source code as you
+# receive it, in any medium, provided that you conspicuously and
+# appropriately publish on each copy an appropriate copyright notice;
+# keep intact all notices stating that this License and any
+# non-permissive terms added in accord with section 7 apply to the code;
+# keep intact all notices of the absence of any warranty; and give all
+# recipients a copy of this License along with the Program.
+
+# prelapse is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
 # common/shell.py
 
 from __future__ import print_function, division
@@ -12,13 +24,16 @@ import os
 import subprocess
 import sys
 
+from .utility_functions import supports_ansi
 
-def call_shell_command(cmd, exit_on_error=True, dry_run=False):
+
+def call_shell_command(cmd, exit_on_error=True, dry_run=False, quiet=False):
   if dry_run:
     print("Dry run, not executing command:\n{}".format(" ".join(cmd)))
     return 0
 
-  print("Running:\n{}\n".format(" ".join(cmd)))
+  if not quiet:
+    print("Running:\n{}\n".format(" ".join(cmd)))
   set_env_for_command(cmd)
   # Filter out the quotes around the -i parameter,
   # only used for the print above
@@ -34,6 +49,9 @@ def call_shell_command(cmd, exit_on_error=True, dry_run=False):
   except Exception as e: # pylint: disable=broad-exception-caught
     print("Encountered error:\n{}".format(e))
     return 1
+  finally:
+    if supports_ansi():
+      print("\x1b[0m")
   return process.returncode
 
 
@@ -76,7 +94,7 @@ def handle_special_output(output, process):
 def handle_pixel_format_change(output, process):
   #First line clears formatting of the terminal from aborted command
   sys.stdout.write("""
-{}\033[00m
+{0}\033[00m
 \033[31m WARNING: Incompatible pixel format detected. \033[00m
 
 ffconcat requires all input images in a group to have matching pixel formats,

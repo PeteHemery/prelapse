@@ -4,6 +4,18 @@
 # This file is part of prelapse which is released under the AGPL-3.0 License.
 # See the LICENSE file for full license details.
 
+# You may convey verbatim copies of the Program's source code as you
+# receive it, in any medium, provided that you conspicuously and
+# appropriately publish on each copy an appropriate copyright notice;
+# keep intact all notices stating that this License and any
+# non-permissive terms added in accord with section 7 apply to the code;
+# keep intact all notices of the absence of any warranty; and give all
+# recipients a copy of this License along with the Program.
+
+# prelapse is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
 # runner/lapse_runner.py
 
 from __future__ import print_function, division
@@ -36,21 +48,21 @@ class LapseRunner: # pylint: disable=no-member
       raise RuntimeError("First label must start at 0.0")
     if content[-1].split("\t")[-1].strip() != "end":
       raise RuntimeError("Last label must be 'end'")
-    files = process_labels((content, self.fps, self.config, self.delimiter, self.jump), self.logger)
+    files, end_time = process_labels((content, self.fps, self.config, self.delimiter, self.jump), self.logger)
 
-    return gen_list_file(files, self.fps, self.jump)
+    return gen_list_file(files, self.fps, self.jump), end_time
 
   def run_parser(self, args, run=False, out=False):
     self.parse_args(args, run=run, out=out)
 
-    output = self.parse_labels_and_config()
-    write_list_file(self.ffconcatfile, output, self.dry_run, fd=self.ffconcatfile_fd)
+    output, end_time = self.parse_labels_and_config()
+    write_list_file(self.ffconcatfile, output, self.dry_run, fd=self.ffconcatfile_fd, quiet=self.quiet)
     self.logger.info(self.ffconcatfile)
     if not (run or out):
       self.logger.warning("Parsed only")
       return []
 
-    filter_complex = self.build_filter_complex()
+    filter_complex = self.build_filter_complex(end_time)
 
     out_args = (self.overwrite, self.fps, self.codec, self.crf, self.audiofile, self.outpath) if out else None
     runcmd = build_ff_cmd(self.ffloglevel, self.verbose, filter_complex, out_args)
@@ -59,9 +71,9 @@ class LapseRunner: # pylint: disable=no-member
     return runcmd
 
   def run_prelapse(self, args, run=False, out=False):
-    runcmd = self.run_parser(args, run=run, out=out)
     try:
-      shell_ret = call_shell_command(runcmd, dry_run=args.dry_run)
+      runcmd = self.run_parser(args, run=run, out=out)
+      shell_ret = call_shell_command(runcmd, dry_run=self.dry_run, quiet=self.quiet)
       if shell_ret:
         print("Shell command failed with return code: {}".format(shell_ret))
         return
@@ -70,19 +82,23 @@ class LapseRunner: # pylint: disable=no-member
       if hasattr(self, "ffconcatfile_fd"):
         if self.ffconcatfile_fd is not None:
           os.remove(self.ffconcatfile)
-    if out:
+    if out and not args.quiet:
       print("Written '{}'".format(self.outpath)) # pylint: disable=no-member
 
-  def build_filter_complex(self):
+  def build_filter_complex(self, end_time):
     # Build various parts of the filter_complex command,
     # then combine them in order
 
     # Build the setpts string, using a format placeholder for parameters.
-    setpts = "setpts={{}}PTS-STARTPTS{}".format(
-      "+({}/TB)".format(format_float(self.jump / self.tempo)) if self.jump else "")
+    setpts = "setpts={{}}(PTS-STARTPTS){}".format(
+      "+({}/TB)".format(format_float(self.jump)) if self.jump else "")
     filter_complex = self.build_video_filter(setpts)
     if self.audiofile is not None:
       filter_complex += self.build_audio_filter(setpts)
+    else:
+      if self.tempo != 1:
+        filter_complex += ";anullsrc=r=16000:cl=stereo:duration={:.06f},a{}[out1]".format(
+          (end_time - self.jump) / self.tempo, setpts.format("{}*".format(self.tempo)))
 
     return filter_complex
 
@@ -102,11 +118,10 @@ class LapseRunner: # pylint: disable=no-member
     # cmd += ",setpts=N/FR/TB"
     # cmd += ",setpts={}-STARTPTS".format("{:0.3f}*PTS".format(1.0 / self.tempo) if self.tempo != 1 else "PTS")
     # Set the PTS filter with possible tempo adjustment.
-    cmd += ",{}".format(setpts.format(
-      "{}*".format(format_float(1.0 / self.tempo)) if self.tempo != 1.0 else ""))
+    cmd += ",{}".format(setpts.format(""))
     # Build scaling and padding based on whether histogram and audiofile are set
     if self.histogram and self.audiofile:
-      new_height = int(self.height * 2 / 3) + int(self.height * 2 / 3) % 2
+      new_height = self.height - self.showcqt_height
       cmd += ",scale={}:{}:flags=lanczos:force_original_aspect_ratio=decrease:eval=frame".format(
         self.width, new_height)
       cmd += ",pad=w={}:h={}:x=-1:y=-1:color=black:eval=frame".format(
@@ -161,7 +176,7 @@ class LapseRunner: # pylint: disable=no-member
         cmd += ",atempo={}".format(self.tempo)
     # Previous experiment: adjust audio pts with asetpts
     # cmd += ",asetpts=PTS-STARTPTS{}".format("+({:0.3f}/TB)".format(self.jump / self.tempo) if self.jump else "")
-    cmd += ",a{}".format(setpts.format(""))
+    cmd += ",a{}".format(setpts.format("{}*".format(format_float(self.tempo)) if self.tempo != 1.0 else ""))
     # More commented experiments for audio:
     # cmd += ",asetpts=({}PTS{})-STARTPTS".format(
     #   "{:0.4f}*".format(self.tempo) if self.tempo != 1 else "",
@@ -177,7 +192,7 @@ class LapseRunner: # pylint: disable=no-member
       # cmd += "[a]showspectrum=s={}x{}:".format(200, self.height)
       # cmd += "orientation=horizontal:color=fire:scale=log:overlap=1[spectrum];"
       cmd += "[b]showcqt=s={}x{}:fps={}[cqt];".format(
-        round(self.width), int(self.height / 3), format_float(self.fps, 3))
+        self.width, self.showcqt_height, format_float(self.fps, 3))
       cmd += "[vid][cqt]"
       cmd += "vstack"
       cmd += ",setdar={}/{}".format(self.width, self.height)

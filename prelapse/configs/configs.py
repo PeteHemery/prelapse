@@ -4,6 +4,18 @@
 # This file is part of prelapse which is released under the AGPL-3.0 License.
 # See the LICENSE file for full license details.
 
+# You may convey verbatim copies of the Program's source code as you
+# receive it, in any medium, provided that you conspicuously and
+# appropriately publish on each copy an appropriate copyright notice;
+# keep intact all notices stating that this License and any
+# non-permissive terms added in accord with section 7 apply to the code;
+# keep intact all notices of the absence of any warranty; and give all
+# recipients a copy of this License along with the Program.
+
+# prelapse is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
 # configs/configs.py
 
 from __future__ import print_function, division
@@ -207,12 +219,21 @@ def load_config(config_path, enforce_files_exist=True):
     md_text = f.read()
 
   markdown_groups = parse_markdown(md_text, enforce_files_exist) # Parse Markdown
+  group_check = {}
+  for group in markdown_groups:
+    if group.group in group_check:
+      group_check[group.group] += 1
+    else:
+      group_check[group.group] = 1
+  for group, count in group_check.items():
+    if count > 1:
+      raise RuntimeError("{} definitions of group '{}'".format(count, group))
   return markdown_groups, config_path
 
 
 def save_config(config_path, config, overwrite=False, dry_run=False):
   if os.path.exists(config_path) and not dry_run and not overwrite:
-    if not backup_prelapse_file(config_path, overwrite):
+    if not backup_prelapse_file(config_path):
       print("No backup will be made. Overwriting the config file.")
 
   if not config_path.endswith(".md"):
