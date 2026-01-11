@@ -51,7 +51,7 @@ default_asserts = [
   lambda out, err, logs, ff, *a:
     (None if re.search(r"file 'file:/tmp/[A-Z0-9]+\.(jpg|png)'", out) else _raise("File path not found")),
   lambda out, err, logs, ff, *a:
-    (None if "movie={}".format(prelapse.common.shell_safe_path(ff)) in out else _raise("Missing movie line")),
+    (None if "movie='{}'".format(prelapse.common.shell_safe_path(ff)) in out else _raise("Missing movie line")),
 ]
 
 

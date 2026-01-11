@@ -104,7 +104,7 @@ class LapseRunner: # pylint: disable=no-member
 
   def build_video_filter(self, setpts):
     # Construct the movie input part with filter string.
-    cmd = "movie={}:f=ffconcat:si=0:format_opts='".format(shell_safe_path(self.ffconcatfile))
+    cmd = "movie='{}':f=ffconcat:si=0:format_opts='".format(shell_safe_path(self.ffconcatfile))
     cmd += "safe=0\\:auto_convert=0"
     if self.metadata_string:
       cmd += "\\:segment_time_metadata=1"
@@ -164,7 +164,7 @@ class LapseRunner: # pylint: disable=no-member
 
   def build_audio_filter(self, setpts):
     # Build audio filter chain based on parameters such as jump, tempo, etc.
-    cmd = ";amovie={}".format(shell_safe_path(self.audiofile))
+    cmd = ";amovie='{}'".format(shell_safe_path(self.audiofile))
     # Uncomment one of the following if needed for experimenting with the audio start time
     # cmd += ",aselect=gt(t\,{})".format(self.jump)
     if self.jump > 0:

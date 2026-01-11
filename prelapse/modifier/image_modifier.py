@@ -269,7 +269,7 @@ def build_phase1_cmd(self, args, group):
   if not self.dry_run:
     handle_list_file(self, group["files"], args.fps, list_file)
 
-  options_string = "movie={}:f=ffconcat:si=0:format_opts='safe=0\\:auto_convert=0',".format(shell_safe_path(list_file))
+  options_string = "movie='{}':f=ffconcat:si=0:format_opts='safe=0\\:auto_convert=0',".format(shell_safe_path(list_file))
   options_string += "fps={:0.3f}:eof_action=pass,".format(args.fps)
   options_string += "vidstabdetect="
   if args.result:
@@ -299,7 +299,7 @@ def build_phase2_cmd(self, args, group):
   if not self.dry_run:
     handle_list_file(self, group["files"], args.fps, list_file)
 
-  options_string = "movie={}:f=ffconcat:si=0:format_opts='safe=0\\:auto_convert=0',".format(shell_safe_path(list_file))
+  options_string = "movie='{}':f=ffconcat:si=0:format_opts='safe=0\\:auto_convert=0',".format(shell_safe_path(list_file))
   options_string += "fps={:0.3f}:eof_action=pass,".format(args.fps)
   options_string += "vidstabtransform="
   if args.input:
